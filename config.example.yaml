@@ -28,15 +28,19 @@ quota:
   probe_max_tokens: 1
   probe_model: claude-haiku-4-5-20251001
 
-# Anthropicのモデル名 -> フェイルオーバー時に使うOllama Cloud側のモデル名
+# Anthropicのモデル名 -> フェイルオーバー時に使うOllama Cloud側のモデル名。
+# target の値はOllama CloudのAPIへ "model" フィールドとしてそのまま送られるため、
+# ollama.com/library に載っている正式なタグ名を過不足なく指定すること
+# ([1m] 等の独自サフィックスを付けるとモデルが見つからずエラーになる)。
+# コンテキスト長はコメントとして注記しておく(値には含めない)。
 model_mapping:
-  default: gpt-oss:120b
+  default: glm-5.3-flash:cloud  # 1Mトークン
   rules:
     - match: "claude-opus-*"
-      target: gpt-oss:120b
+      target: glm-5.3-flash:cloud  # 1Mトークン
     - match: "claude-sonnet-*"
-      target: qwen3-coder:480b
+      target: glm-5.3-flash:cloud  # 1Mトークン
     - match: "claude-haiku-*"
-      target: qwen3:30b
+      target: gemma4:31b-cloud  # 256Kトークン
 
 log_level: INFO
