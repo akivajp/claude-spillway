@@ -1,0 +1,42 @@
+# claude-spillway 設定ファイルの例。
+# `cp config.example.yaml config.yaml` してから編集し、
+# `claude-spillway serve -c config.yaml` で起動してください。
+# ${ENV_VAR} の形式で環境変数を埋め込めます(APIキーの直書き回避)。
+
+listen:
+  host: 127.0.0.1
+  port: 8787
+
+anthropic:
+  # Claude Codeが送ってくる認証ヘッダー(x-api-key または OAuthのBearerトークン)を
+  # そのまま横流しするだけなので、ここにAnthropicの資格情報を書く必要はありません。
+  base_url: https://api.anthropic.com
+
+ollama:
+  base_url: https://ollama.com
+  # Ollama CloudのAPIキー。 https://ollama.com/settings/keys で発行してください。
+  api_key: ${OLLAMA_API_KEY}
+
+quota:
+  # 残量がこの%%を下回ったらOllama Cloudへフェイルオーバーする
+  fallback_threshold_pct: 10.0
+  # 残量がこの%%まで回復したらAnthropicへ切り戻す(フラッピング防止のヒステリシス)
+  recovery_threshold_pct: 20.0
+  # フォールバック中、Anthropicの回復確認プローブを送る間隔(秒)
+  probe_interval_seconds: 60.0
+  # 回復確認プローブのmax_tokens(小さいほどquota消費を抑えられる)
+  probe_max_tokens: 1
+  probe_model: claude-haiku-4-5-20251001
+
+# Anthropicのモデル名 -> フェイルオーバー時に使うOllama Cloud側のモデル名
+model_mapping:
+  default: gpt-oss:120b
+  rules:
+    - match: "claude-opus-*"
+      target: gpt-oss:120b
+    - match: "claude-sonnet-*"
+      target: qwen3-coder:480b
+    - match: "claude-haiku-*"
+      target: qwen3:30b
+
+log_level: INFO

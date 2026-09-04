@@ -1,0 +1,38 @@
+[project]
+name = "claude-spillway"
+version = "0.1.0"
+description = "Quota-aware failover proxy for Claude Code: spills over from Anthropic to Ollama Cloud when your quota runs low, and switches back once it recovers."
+readme = "README.md"
+authors = [
+    { name = "Akiva Miura", email = "akiva.miura@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
+    "pydantic>=2.13.5",
+    "pyyaml>=6.0.3",
+    "rich>=15.0.0",
+    "uvicorn[standard]>=0.52.4",
+]
+
+[project.scripts]
+claude-spillway = "claude_spillway:main"
+
+[build-system]
+requires = ["uv_build>=0.9.17,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.6",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"

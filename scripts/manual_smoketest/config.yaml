@@ -1,0 +1,21 @@
+listen:
+  host: 127.0.0.1
+  port: 8788
+
+anthropic:
+  base_url: http://127.0.0.1:9101
+
+ollama:
+  base_url: http://127.0.0.1:9102
+  api_key: smoketest-ollama-key
+
+quota:
+  fallback_threshold_pct: 10.0
+  recovery_threshold_pct: 20.0
+  probe_interval_seconds: 5.0
+  probe_max_tokens: 1
+
+model_mapping:
+  default: gpt-oss:120b
+
+log_level: INFO
