@@ -143,3 +143,28 @@ async def test_status_endpoint_reports_mode(settings: Settings) -> None:
         assert data["ollama"]["requests_sent"] == 0
 
     await backends.aclose()
+
+
+async def test_head_healthcheck_is_forwarded_to_anthropic(settings: Settings) -> None:
+    """Claude CodeはHEAD /api/helloで接続確認を行うため、405にせず転送できる必要がある。"""
+    calls = {"anthropic": 0}
+
+    def anthropic_handler(request: httpx.Request) -> httpx.Response:
+        calls["anthropic"] += 1
+        assert request.method == "HEAD"
+        return httpx.Response(200)
+
+    backends = ProxyBackends(
+        settings,
+        anthropic_transport=httpx.MockTransport(anthropic_handler),
+        ollama_transport=httpx.MockTransport(_ollama_messages_handler),
+    )
+    app = create_app(settings, backends=backends)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        r = await client.head("/api/hello")
+        assert r.status_code == 200
+
+    assert calls["anthropic"] == 1
+    await backends.aclose()

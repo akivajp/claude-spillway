@@ -83,7 +83,7 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
 
     @app.api_route(
         "/{full_path:path}",
-        methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+        methods=["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH"],
     )
     async def proxy(full_path: str, request: Request) -> StreamingResponse:
         body = await request.body()
