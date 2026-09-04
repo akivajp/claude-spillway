@@ -109,6 +109,12 @@ uv sync
    uv run claude-spillway monitor
    ```
 
+   claude-spillway never holds Anthropic credentials of its own — it only
+   learns your quota by reading the rate-limit headers on responses to
+   requests Claude Code actually sends through it. So `monitor` shows a
+   "waiting" message until at least one real request has passed through;
+   it can't proactively poll Anthropic on its own.
+
 You can try the whole flow without any real credentials using the bundled
 fake upstream servers — see
 [`scripts/manual_smoketest/`](scripts/manual_smoketest/).

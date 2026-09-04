@@ -52,6 +52,21 @@ def _build_renderable(data: dict, url: str, error: str | None) -> Group:
 
     anthropic = data.get("anthropic", {})
     ollama = data.get("ollama", {})
+
+    if anthropic.get("observed_at") is None and ollama.get("last_request_at") is None:
+        # このプロキシはAnthropicの認証情報を保持せず、Claude Codeからの実リクエストを
+        # 中継して初めてレスポンスヘッダーからquotaを観測できる設計のため、
+        # 一度もリクエストが通っていない間は数値が出せない。その旨を明示する。
+        return Group(
+            header,
+            Panel(
+                "まだこのプロキシを経由したリクエストが観測されていません。\n"
+                "ANTHROPIC_BASE_URL をこのプロキシに向けて Claude Code から\n"
+                "何かリクエストを送ると、ここにquota状況が表示されます。",
+                title="待機中",
+                border_style="yellow",
+            ),
+        )
     thresholds = data.get("thresholds", {})
 
     table = Table(title="Anthropic quota", show_lines=False)

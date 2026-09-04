@@ -70,6 +70,11 @@ uv sync
    uv run claude-spillway monitor
    ```
 
+   claude-spillwayはAnthropicの認証情報を自前で保持しないため、Claude Codeが
+   実際に送ってきたリクエストのレスポンスヘッダーを読んで初めてquotaを知る
+   設計になっています。そのため、少なくとも1回リクエストが通るまで`monitor`
+   は「待機中」と表示し続けます(自発的にAnthropicへ問い合わせることはできません)。
+
 実際の資格情報を使わずに一連の流れを試したい場合は、同梱のダミーサーバーが使えます。[`scripts/manual_smoketest/`](scripts/manual_smoketest/)を参照してください。
 
 ## 設定
