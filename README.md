@@ -75,7 +75,7 @@ this proxy.
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone <this repository's URL>
+git clone https://github.com/akivajp/claude-spillway.git
 cd claude-spillway
 uv sync
 ```

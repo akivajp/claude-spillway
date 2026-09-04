@@ -36,7 +36,7 @@ Claude Code --ANTHROPIC_BASE_URL--> claude-spillway --> Anthropic API
 Python 3.11以降と[uv](https://docs.astral.sh/uv/)が必要です。
 
 ```bash
-git clone <このリポジトリのURL>
+git clone https://github.com/akivajp/claude-spillway.git
 cd claude-spillway
 uv sync
 ```
