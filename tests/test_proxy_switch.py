@@ -400,3 +400,131 @@ async def test_ollama_headroom_is_known_from_the_very_first_request(settings: Se
     assert snapshot.weekly_utilization == pytest.approx(0.2)
     await app.state.recovery_probe.stop()
     await backends.aclose()
+
+
+#: Ollamaの週次枠を使い切ったアカウントの応答。この状態で中継すると429が返る。
+#: An account whose weekly Ollama allowance is gone; relaying there returns 429.
+_OLLAMA_USAGE_EXHAUSTED = {
+    "limits": {
+        "session": {"usage": 0.1, "models": []},
+        "weekly": {"usage": 1.0, "models": []},
+    }
+}
+
+
+async def test_never_relays_into_an_exhausted_ollama_when_anthropic_rejects(
+    settings: Settings,
+) -> None:
+    """A 429 from Anthropic must not push traffic into an Ollama that is out.
+
+    The reported failure: on a fresh start every session opened with a burst of
+    Ollama's "weekly usage limit" 429s before an answer finally arrived. A
+    single Anthropic 429 pinned it to zero, which tied with Ollama's measured
+    zero, and the tie sent traffic to the backend that was certainly out rather
+    than the one that was merely suspected.
+
+    Anthropicの429で、枯渇済みのOllamaへトラフィックを送らないこと。
+    報告された不具合: 新規起動のたびにセッション冒頭でOllamaの「週次上限」429が
+    連発し、しばらくしてようやく応答が返っていた。Anthropicの429がAnthropicを
+    0扱いにし、それがOllamaの実測0%と同値になり、同値のときに「確実に枯渇して
+    いる方」を選んでいたことが原因。
+    """
+    calls = {"anthropic": 0, "ollama_messages": 0}
+
+    def anthropic_handler(request: httpx.Request) -> httpx.Response:
+        calls["anthropic"] += 1
+        # 短期レート制限の429。使用率ヘッダーは載らない。
+        # A short-term rate limit: no utilization headers on it.
+        return httpx.Response(429, json={"error": {"message": "rate limit exceeded"}})
+
+    def ollama_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/usage":
+            return httpx.Response(200, json=_OLLAMA_USAGE_EXHAUSTED)
+        calls["ollama_messages"] += 1
+        return httpx.Response(429, json={"error": {"message": "weekly usage limit"}})
+
+    backends = ProxyBackends(
+        settings,
+        anthropic_transport=httpx.MockTransport(anthropic_handler),
+        ollama_transport=httpx.MockTransport(ollama_handler),
+    )
+    app = create_app(settings, backends=backends)
+
+    payload = {"model": "claude-opus-4-1", "max_tokens": 10, "messages": []}
+    headers = {"x-api-key": "sk-ant-test"}
+
+    # lifespanを通す。起動時のOllama残量読み取りはここで走る。
+    # Run the lifespan: the startup read of Ollama's headroom happens here.
+    async with app.router.lifespan_context(app):
+        for _ in range(100):
+            if app.state.tracker.ollama_snapshot is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert app.state.tracker.ollama_snapshot is not None, (
+            "起動時点でOllamaの残量が読めていない"
+        )
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            # Claude Codeのリトライを模して数回叩く。
+            # Several calls, standing in for Claude Code's retries.
+            for _ in range(5):
+                response = await client.post("/v1/messages", json=payload, headers=headers)
+                # Anthropicの429がそのまま返る。これは正直な応答であり、
+                # Ollamaの「週次上限」429にすり替わってはならない。
+                # Anthropic's own 429 is relayed; it must never be replaced by
+                # Ollama's "weekly usage limit" one.
+                assert response.status_code == 429
+                assert "weekly usage limit" not in response.text
+
+    assert calls["ollama_messages"] == 0, "枯渇済みのOllamaへ中継してしまっている"
+    assert app.state.tracker.mode is BackendMode.ANTHROPIC
+    assert app.state.tracker.last_reason == "ollama_exhausted"
+
+
+async def test_a_429_that_still_reports_headroom_is_not_exhaustion(settings: Settings) -> None:
+    """A rejection while the windows still report room is a short-term limit.
+
+    窓に余裕があることを同じ応答が示している429は、短期レート制限である。
+    """
+
+    def anthropic_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            headers={
+                "anthropic-ratelimit-unified-5h-utilization": "0.13",
+                "anthropic-ratelimit-unified-7d-utilization": "0.01",
+            },
+            json={"error": {"message": "rate limit exceeded"}},
+        )
+
+    calls = {"ollama": 0}
+
+    def ollama_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/usage":
+            return httpx.Response(200, json=_OLLAMA_USAGE_BODY)
+        calls["ollama"] += 1
+        return httpx.Response(200, json={"id": "msg_ollama", "content": []})
+
+    backends = ProxyBackends(
+        settings,
+        anthropic_transport=httpx.MockTransport(anthropic_handler),
+        ollama_transport=httpx.MockTransport(ollama_handler),
+    )
+    app = create_app(settings, backends=backends)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        for _ in range(3):
+            assert (
+                await client.post(
+                    "/v1/messages",
+                    json={"model": "claude-opus-4-1", "max_tokens": 10, "messages": []},
+                    headers={"x-api-key": "sk-ant-test"},
+                )
+            ).status_code == 429
+
+    assert app.state.tracker.mode is BackendMode.ANTHROPIC
+    assert calls["ollama"] == 0
+    await app.state.recovery_probe.stop()
+    await backends.aclose()

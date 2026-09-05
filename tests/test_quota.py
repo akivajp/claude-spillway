@@ -678,3 +678,50 @@ def test_reset_estimator_survives_a_none_reading() -> None:
     assert s.estimated_session_reset == pytest.approx(
         t0 + 120 + OLLAMA_SESSION_WINDOW_SECONDS
     )
+
+
+def test_reverse_failover_still_works_while_anthropic_is_flagged() -> None:
+    """A raised 429 flag must not pin the proxy to an Ollama that keeps failing.
+
+    The flag says "Anthropic rejected once", which may be a short-term limit.
+    Ollama failing five times in a row is a measurement. Staying on the latter
+    because of the former left the proxy relaying guaranteed rejections until
+    a background probe happened to land.
+
+    429フラグが立っているだけで、失敗し続けるOllamaに縛り付けられないこと。
+    フラグは「Anthropicが1度拒否した」であり、短期制限かもしれない。一方
+    Ollamaの5回連続失敗は実測である。前者を理由に後者へ留まった結果、
+    バックグラウンドのプローブが当たるまで確実な拒否を中継し続けていた。
+    """
+    tracker = QuotaTracker(
+        fallback_threshold_pct=10.0,
+        recovery_threshold_pct=20.0,
+        ollama_failure_threshold=5,
+        reverse_failover_min_5h_pct=10.0,
+    )
+    # Anthropicの実数値は一度も観測できていない(起動直後の状況)。
+    # Anthropic has never been read with real numbers - the just-started case.
+    assert tracker.note_anthropic_rate_limited() is BackendMode.FALLBACK
+    assert tracker.note_ollama_failures(4) is BackendMode.FALLBACK
+    assert tracker.note_ollama_failures(5) is BackendMode.ANTHROPIC
+    assert tracker.last_reason == "ollama_failures"
+
+
+def test_a_measured_zero_outranks_a_flagged_zero() -> None:
+    """Between a certain exhaustion and a suspected one, take the suspected one.
+
+    Ollama's zero is a measured window that will not turn over for days.
+    Anthropic's is a flag from one rejection that may clear in seconds.
+
+    確実な枯渇と疑わしい枯渇なら、疑わしい方を選ぶこと。
+    Ollamaの0%は数日変わらない窓の実測値だが、Anthropicの0は1回の拒否から
+    立てたフラグであり、数秒で解けるかもしれない。
+    """
+    tracker = QuotaTracker(
+        fallback_threshold_pct=10.0,
+        recovery_threshold_pct=20.0,
+        ollama_min_remaining_pct=5.0,
+    )
+    tracker.observe_ollama(_ollama(session=0.1, weekly=1.0))
+    assert tracker.note_anthropic_rate_limited() is BackendMode.ANTHROPIC
+    assert tracker.last_reason == "ollama_exhausted"

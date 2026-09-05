@@ -182,6 +182,14 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
 
     @asynccontextmanager
     async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
+        # Ollamaの残量は設定のAPIキーだけで読めるため、最初のリクエストを待たずに
+        # 起動時点から把握しておく。この値が無いと「枯渇したOllamaへ送らない」
+        # ガードが判定材料を持てず、起動後の最初の1件がちょうどそこを踏む。
+        # Ollama's headroom needs only the configured API key, so read it from
+        # startup rather than waiting for the first request: without it the
+        # guard against routing into an exhausted Ollama has nothing to judge
+        # on, and the very first request after startup is what meets that gap.
+        recovery_probe.start()
         yield
         # Shut down the background probe and the HTTP clients on exit.
         # 終了時にバックグラウンドプローブとHTTPクライアントを片付ける。
@@ -327,13 +335,21 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
                         new_mode.value,
                     )
                     recovery_probe.start()
-                # A 429 carries no utilization headers, so the observe() above
-                # learned nothing. Record the rejection itself, or the proxy
-                # stays parked on a backend that refuses every request.
-                # 429には使用率ヘッダーが載らないため、上のobserve()では何も学べない。
-                # 拒否そのものを記録しないと、全リクエストを拒否し続けるバックエンドに
-                # 留まり続けてしまう。
-                if response.status_code == 429:
+                # A 429 usually carries no utilization headers, so the observe()
+                # above learned nothing; record the rejection itself, or the
+                # proxy stays parked on a backend that refuses every request.
+                # But when the same response *does* report the windows, it has
+                # already said how much is left - and a rejection while a window
+                # still has room is a short-term rate limit, which clears on its
+                # own in seconds. Treating that as exhaustion moved traffic off a
+                # perfectly healthy Anthropic.
+                # 429には通常 使用率ヘッダーが載らず、上のobserve()では何も学べない
+                # ため、拒否そのものを記録しないと全リクエストを拒否するバックエンドに
+                # 留まり続けてしまう。一方、同じ応答が窓の値を返している場合は残量を
+                # 名言しているのであり、窓に余裕がある状態での拒否は数秒で解ける短期
+                # レート制限である。これを枯渇として扱うと、健全なAnthropicから
+                # トラフィックを逃がしてしまう。
+                if response.status_code == 429 and snapshot.remaining_ratio() is None:
                     new_mode = tracker.note_anthropic_rate_limited()
                     if new_mode is not previous_mode:
                         logger.warning(

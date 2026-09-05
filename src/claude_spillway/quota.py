@@ -602,14 +602,24 @@ class QuotaTracker:
         """
         if consecutive_failures < self._ollama_failure_threshold:
             return self.mode
-        # 直近のAnthropic側の事実が429なら、古い5時間窓の読み値は信用できない。
-        # If the latest Anthropic fact is a 429, the stale 5h reading is moot.
-        remaining_5h = (
-            None if self._anthropic_rate_limited else self._anthropic_window(anthropic_5h=True)
-        )
-        if remaining_5h is None or remaining_5h < self._reverse_min_5h:
-            # Nowhere better to go; staying put beats thrashing.
-            # 逃げ先が無いため、無理に切り替えず現状を維持する。
+        # 見送るのは「Anthropicも捌けない」と実測できている場合だけにする。
+        # 以前は429フラグが立っているだけで、あるいは一度も観測できていない
+        # だけで見送っていた。その結果、失敗し続けるOllamaに縛り付けられ、
+        # 抜け出せなくなっていた。確実に失敗している相手より、未知あるいは
+        # 一時的に拒否しているだけかもしれない相手を試す方が良い。
+        # Stand down only when Anthropic is *measured* as unable to serve.
+        # Previously a raised 429 flag - or simply never having read Anthropic
+        # at all - was enough to stay, which pinned the proxy to an Ollama that
+        # was failing every request. Trying a backend that is unknown, or that
+        # may only be rejecting briefly, beats one that is certainly failing.
+        remaining_5h = self._anthropic_window(anthropic_5h=True)
+        if (
+            remaining_5h is not None
+            and remaining_5h < self._reverse_min_5h
+            and not self._anthropic_rate_limited
+        ):
+            # 逃げ先が無いことが分かっているため、無理に切り替えず現状を維持する。
+            # Nowhere better to go, and we know it; staying put beats thrashing.
             return self.mode
         self._ollama_blocked_until = time.time() + self._reverse_cooldown
         if self.mode is BackendMode.FALLBACK:
@@ -638,19 +648,24 @@ class QuotaTracker:
         #    Ollamaを使えなくする条件(最優先)。
         if now < self._ollama_blocked_until:
             return self._ensure(BackendMode.ANTHROPIC, "ollama_cooldown")
-        # Below Ollama's floor, but stand down only while Anthropic reads
-        # and holds strictly more. When Anthropic is itself exhausted (or
-        # unreadable) its last drops are worthless, so spending Ollama's
-        # remaining few percent beats relaying into guaranteed rejections.
-        # Ollamaが下限を下回っても、Anthropicが読めてかつより余裕がある場合に
-        # 限って使用を断念する。Anthropic自身が枯渇(または読めない)場合、
-        # そちらに送り続けるのは確実な拒否であって、Ollamaの残り数%を使う
-        # 方がまだましである。
+        # Below Ollama's floor, stand down while Anthropic reads at least as
+        # well. The tie matters: when a 429 has pinned Anthropic to zero and
+        # Ollama is measured at zero, the two are not equally bad. Ollama's
+        # zero is a measurement of a window that will not turn over for days;
+        # Anthropic's is a flag raised by a single rejection that may well be a
+        # short-term limit clearing in seconds. Sending traffic to the one that
+        # is certainly out, over the one that is merely suspected, is never right.
+        # Ollamaが下限を下回る場合、Anthropicが同等以上に読めていれば使用を断念する。
+        # 同値の扱いが重要である。429でAnthropicを0扱いにしている状態とOllamaの
+        # 実測0%は、同じ0でも意味が違う。Ollamaの0%は数日変わらない窓の実測値だが、
+        # Anthropicの0はたった1回の拒否から立てたフラグであり、数秒で解ける短期制限
+        # かもしれない。確実に枯渇している方を、疑わしいだけの方より優先して選ぶ
+        # 理由はない。
         if (
             ollama_remaining is not None
             and ollama_remaining < self._ollama_min_remaining
             and anthropic_remaining is not None
-            and anthropic_remaining > ollama_remaining
+            and anthropic_remaining >= ollama_remaining
         ):
             return self._ensure(BackendMode.ANTHROPIC, "ollama_exhausted")
 
