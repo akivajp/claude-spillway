@@ -77,6 +77,8 @@ uv sync
 
 実際の資格情報を使わずに一連の流れを試したい場合は、同梱のダミーサーバーが使えます。[`scripts/manual_smoketest/`](scripts/manual_smoketest/)を参照してください。
 
+Windows + WSL2環境で使う場合は、[docs/wsl-windows.ja.md](docs/wsl-windows.ja.md) にsystemdユーザーサービスとしての常駐手順と、Windows側・WSL側両方のClaude Code拡張への設定方法をまとめています。
+
 ## 設定
 
 全項目は[`config.example.yaml`](config.example.yaml)を参照してください。

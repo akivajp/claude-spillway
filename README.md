@@ -119,6 +119,11 @@ You can try the whole flow without any real credentials using the bundled
 fake upstream servers — see
 [`scripts/manual_smoketest/`](scripts/manual_smoketest/).
 
+Running on Windows with WSL2? See
+[docs/wsl-windows.md](docs/wsl-windows.md) for keeping the proxy resident as a
+systemd user service and wiring up both the Windows and the WSL Claude Code
+extension.
+
 ## Configuration
 
 See [`config.example.yaml`](config.example.yaml) for the full reference.

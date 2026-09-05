@@ -46,12 +46,18 @@ quota:
 # so it must be exactly a tag listed on ollama.com/library (adding a custom
 # suffix such as [1m] makes the model unresolvable and the request fails).
 # Context lengths are noted in comments only; they are not part of the value.
+# Every target MUST be a tool-calling model: Claude Code is an agent and cannot
+# work with a model that does not support tool use. Verify with a probe request
+# before adding one here (see docs/wsl-windows.md, "Choosing a fallback model").
 #
 # Anthropicのモデル名 -> フェイルオーバー時に使うOllama Cloud側のモデル名。
 # target の値はOllama CloudのAPIへ "model" フィールドとしてそのまま送られるため、
 # ollama.com/library に載っている正式なタグ名を過不足なく指定すること
 # ([1m] 等の独自サフィックスを付けるとモデルが見つからずエラーになる)。
 # コンテキスト長はコメントとして注記しておく(値には含めない)。
+# target には必ずtool calling対応モデルを指定すること。Claude Codeはエージェントであり、
+# ツール呼び出しができないモデルでは機能しない。追加前に実際にリクエストを投げて
+# 確認すること(docs/wsl-windows.ja.md の「フォールバック先モデルの選定」を参照)。
 model_mapping:
   default: glm-5.3-flash:cloud  # 1M tokens / 1Mトークン
   rules:
