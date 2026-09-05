@@ -58,7 +58,7 @@ mode works.
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # install to a stable path (~/.local/bin/claude-spillway)
-uv tool install git+https://github.com/akivajp/claude-spillway
+uv tool install claude-spillway
 # to run a local checkout instead:
 #   uv tool install --editable ~/git/claude-spillway
 ```

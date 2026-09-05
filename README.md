@@ -1,5 +1,9 @@
 # claude-spillway
 
+[![PyPI](https://img.shields.io/pypi/v/claude-spillway)](https://pypi.org/project/claude-spillway/)
+[![Python](https://img.shields.io/pypi/pyversions/claude-spillway)](https://pypi.org/project/claude-spillway/)
+[![License: MIT](https://img.shields.io/pypi/l/claude-spillway)](https://github.com/akivajp/claude-spillway/blob/main/LICENSE)
+
 [日本語版 README はこちら](https://github.com/akivajp/claude-spillway/blob/main/README.ja.md)
 
 A quota-aware failover proxy for [Claude Code](https://claude.com/claude-code).
@@ -75,6 +79,18 @@ this proxy.
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
+uv tool install claude-spillway
+```
+
+Or run it without installing:
+
+```bash
+uvx --from claude-spillway claude-spillway serve
+```
+
+To work on it instead, clone the repository:
+
+```bash
 git clone https://github.com/akivajp/claude-spillway.git
 cd claude-spillway
 uv sync
@@ -82,18 +98,20 @@ uv sync
 
 ## Quick start
 
-1. Copy the example config and fill in your Ollama Cloud API key
-   (get one at <https://ollama.com/settings/keys>):
+1. Put the example config in the location `serve` reads by default, and set
+   your Ollama Cloud API key (get one at <https://ollama.com/settings/keys>):
 
    ```bash
-   cp config.example.yaml config.yaml
+   mkdir -p ~/.config/claude-spillway
+   curl -o ~/.config/claude-spillway/config.yaml \
+     https://raw.githubusercontent.com/akivajp/claude-spillway/main/config.example.yaml
    export OLLAMA_API_KEY=your-ollama-cloud-api-key
    ```
 
 2. Start the proxy:
 
    ```bash
-   uv run claude-spillway serve -c config.yaml
+   claude-spillway serve
    ```
 
 3. Point Claude Code at it and launch as usual:
@@ -106,7 +124,7 @@ uv sync
 4. (Optional) In another terminal, watch quota status live:
 
    ```bash
-   uv run claude-spillway monitor
+   claude-spillway monitor
    ```
 
    claude-spillway never holds Anthropic credentials of its own — it only

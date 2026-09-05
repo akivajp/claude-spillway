@@ -1,5 +1,8 @@
 # claude-spillway
 
+[![PyPI](https://img.shields.io/pypi/v/claude-spillway)](https://pypi.org/project/claude-spillway/)
+[![Python](https://img.shields.io/pypi/pyversions/claude-spillway)](https://pypi.org/project/claude-spillway/)
+
 [English README is here](README.md)
 
 [Claude Code](https://claude.com/claude-code) 用の、quota連動フェイルオーバープロキシです。
@@ -36,6 +39,18 @@ Claude Code --ANTHROPIC_BASE_URL--> claude-spillway --> Anthropic API
 Python 3.11以降と[uv](https://docs.astral.sh/uv/)が必要です。
 
 ```bash
+uv tool install claude-spillway
+```
+
+インストールせずに実行することもできます:
+
+```bash
+uvx --from claude-spillway claude-spillway serve
+```
+
+開発する場合はリポジトリをクローンしてください:
+
+```bash
 git clone https://github.com/akivajp/claude-spillway.git
 cd claude-spillway
 uv sync
@@ -43,18 +58,20 @@ uv sync
 
 ## クイックスタート
 
-1. 設定ファイルの例をコピーし、Ollama CloudのAPIキーを設定します
+1. `serve` が既定で読む場所に設定ファイルの例を配置し、Ollama CloudのAPIキーを設定します
    (<https://ollama.com/settings/keys> から発行できます):
 
    ```bash
-   cp config.example.yaml config.yaml
+   mkdir -p ~/.config/claude-spillway
+   curl -o ~/.config/claude-spillway/config.yaml \
+     https://raw.githubusercontent.com/akivajp/claude-spillway/main/config.example.yaml
    export OLLAMA_API_KEY=your-ollama-cloud-api-key
    ```
 
 2. プロキシを起動します:
 
    ```bash
-   uv run claude-spillway serve -c config.yaml
+   claude-spillway serve
    ```
 
 3. Claude Codeをこのプロキシに向けて、いつも通り起動します:
@@ -67,7 +84,7 @@ uv sync
 4. (任意) 別のターミナルでquota状況をリアルタイム監視できます:
 
    ```bash
-   uv run claude-spillway monitor
+   claude-spillway monitor
    ```
 
    claude-spillwayはAnthropicの認証情報を自前で保持しないため、Claude Codeが

@@ -53,7 +53,7 @@ systemd=true
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 固定パス (~/.local/bin/claude-spillway) にインストール
-uv tool install git+https://github.com/akivajp/claude-spillway
+uv tool install claude-spillway
 # 開発中のリポジトリをそのまま使う場合:
 #   uv tool install --editable ~/git/claude-spillway
 ```
