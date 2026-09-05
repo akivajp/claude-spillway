@@ -44,6 +44,7 @@ Ollama Cloudには、ドキュメント化された公式のquota APIが**依然
 
 - `anthropic_first`(デフォルト) — Anthropicが逼迫するまで使い続け、逼迫したらフェイルオーバーする。従来の挙動
 - `weekly_balance` — 短い窓が両方とも余裕のある間(`balance_session_floor_pct`)は、**週次窓**の残量が多い方を優先する。相手側が `balance_margin_pct` 以上優っている場合のみ切り替えるため、拮抗した2者間で振動しない
+- `burn_rate_balance` — 窓ごとに「残量 ÷ (リセットまでの時間 ÷ 窓の全長)」を求め、バックエンドごとに最も逼迫した窓を採用し、その値が良い方を優先する。リセット時刻が不明な場合(Ollamaは常にこれに該当)は「窓が始まったばかり」と仮定して最も甘く見積もるため、不明であることを根拠に焦りは生まない。`anthropic_priority_weight`(デフォルト1.1)により比較はClaudeサブスクリプション側に傾く。拮抗していればAnthropicが勝ち、約9%劣るまでトラフィックはOllamaへ移らない。ある側がリセットまでに使い切りそうなペースでquotaを消費している場合の安全弁として使う
 
 ポリシーに関係なく、常時2つのガードが働きます。
 
@@ -136,7 +137,8 @@ Windows + WSL2環境で使う場合は、[docs/wsl-windows.ja.md](docs/wsl-windo
 | `quota.recovery_threshold_pct` | `20.0` | この残量%まで回復すると切り戻す |
 | `quota.probe_interval_seconds` | `60.0` | バックグラウンドプローブがquotaを再取得する間隔 |
 | `quota.use_usage_endpoint` | `true` | OAuth使用量エンドポイントからquotaを読む(quota消費なし) |
-| `routing.policy` | `anthropic_first` | `anthropic_first` または `weekly_balance` |
+| `routing.policy` | `anthropic_first` | `anthropic_first` / `weekly_balance` / `burn_rate_balance` |
+| `routing.anthropic_priority_weight` | `1.1` | burn_rate_balance: Anthropic側の優先度 |
 | `routing.ollama_min_remaining_pct` | `5.0` | Ollama側がこの残量%を下回ったらフェイルオーバーしない |
 | `routing.ollama_failure_threshold` | `5` | この回数連続で失敗したらAnthropicへ戻す |
 | `model_mapping.rules` / `model_mapping.default` | — | Anthropicのモデル名 -> Ollama側のモデル名 |

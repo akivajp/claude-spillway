@@ -97,6 +97,16 @@ neither is critical:
   (`balance_session_floor_pct`), prefer whichever side has more of its **weekly**
   window left, switching only once the other side is ahead by
   `balance_margin_pct` so two near-equal backends don't oscillate.
+- `burn_rate_balance` — compare, per window, how much is left relative to how
+  long the window still has to run (`remaining / (time to reset / window
+  length)`), take the tightest window per backend, and prefer the side whose
+  tightest reading is better. A reset time we don't know (Ollama never reports
+  one) is assumed to be a window that just started — the most generous
+  reading — so the unknown never manufactures urgency. `anthropic_priority_weight`
+  (default 1.1) leans the comparison toward the Claude subscription you are
+  already paying for; at parity it wins, and it needs to be ~9% worse before
+  traffic moves to Ollama. Use it as a safety valve when one side is burning
+  quota faster than its reset will allow.
 
 Two guards apply under every policy:
 
@@ -201,7 +211,8 @@ If neither exists, claude-spillway starts on its built-in defaults. Key fields:
 | `quota.recovery_threshold_pct` | `20.0` | Remaining % above which we switch back |
 | `quota.probe_interval_seconds` | `60.0` | How often the background probe refreshes the quota reading |
 | `quota.use_usage_endpoint` | `true` | Read quota from the OAuth usage endpoint (consumes no quota) |
-| `routing.policy` | `anthropic_first` | `anthropic_first` or `weekly_balance` |
+| `routing.policy` | `anthropic_first` | `anthropic_first`, `weekly_balance` or `burn_rate_balance` |
+| `routing.anthropic_priority_weight` | `1.1` | burn_rate_balance: how much to favour Anthropic |
 | `routing.ollama_min_remaining_pct` | `5.0` | Never fail over once Ollama is this low |
 | `routing.ollama_failure_threshold` | `5` | Consecutive Ollama failures that send traffic back |
 | `model_mapping.rules` / `model_mapping.default` | — | Anthropic model name -> Ollama model name |

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 
 import httpx
@@ -329,3 +330,99 @@ def test_reverse_failover_stays_put_when_anthropic_has_no_room() -> None:
     tracker.observe(_anthropic(0.95, 0.1))
     assert tracker.mode is BackendMode.FALLBACK
     assert tracker.note_ollama_failures(10) is BackendMode.FALLBACK
+
+
+def _anthropic_with_resets(util_5h: float, reset_5h: float, util_7d: float, reset_7h: float) -> QuotaSnapshot:
+    s = parse_quota_headers(
+        httpx.Headers(
+            {
+                "anthropic-ratelimit-unified-5h-utilization": str(util_5h),
+                "anthropic-ratelimit-unified-7d-utilization": str(util_7d),
+            }
+        )
+    )
+    # parse_timestamp 経由ではなく直接代入する(テストで時刻を固定するため)。
+    # Set directly rather than through parse_timestamp, to freeze the clock.
+    return QuotaSnapshot(
+        utilization_5h=s.utilization_5h,
+        utilization_7d=s.utilization_7d,
+        requests_remaining_ratio=None,
+        tokens_remaining_ratio=None,
+        observed_at=time.time(),
+        reset_5h=reset_5h,
+        reset_7d=reset_7h,
+        source=SOURCE_HEADERS,
+    )
+
+
+def test_burn_rate_switches_to_ollama_when_anthropic_is_burning_faster() -> None:
+    """ユーザーが挙げた数値例そのもの: Anthropic残70%/4h後リセット vs Ollama残100%。
+
+    Anthropicのバーンレート0.875(重み1.1で0.9625) < Ollamaの1.0 なのでOllamaへ。
+    """
+    now = time.time()
+    tracker = QuotaTracker(
+        fallback_threshold_pct=10.0,
+        recovery_threshold_pct=20.0,
+        policy=RoutingPolicy.BURN_RATE_BALANCE,
+        anthropic_priority_weight=1.1,
+    )
+    tracker.observe_ollama(_ollama(session=0.0, weekly=0.0))
+    # Ollamaの週次は残100%(=1.0)。リセット時刻不明なので分母は最大値。
+    tracker.observe(_anthropic_with_resets(0.30, now + 4 * 3600, 0.1, now + 6 * 86400))
+    assert tracker.mode is BackendMode.FALLBACK
+    assert tracker.last_reason == "burn_rate_balance"
+
+
+def test_burn_rate_stays_with_weighted_anthropic_at_parity() -> None:
+    """重み1.1により、Ollamaがわずかに余裕があるだけでは移らないこと。
+
+    Anthropic残50%/2.5h後リセット=1.0、重み1.1で1.1。Ollama残100%=1.0。
+    Anthropicの方が上なので動かない。
+    """
+    now = time.time()
+    tracker = QuotaTracker(
+        fallback_threshold_pct=10.0,
+        recovery_threshold_pct=20.0,
+        policy=RoutingPolicy.BURN_RATE_BALANCE,
+        anthropic_priority_weight=1.1,
+    )
+    tracker.observe_ollama(_ollama(session=0.0, weekly=0.0))
+    tracker.observe(_anthropic_with_resets(0.5, now + 2.5 * 3600, 0.1, now + 6 * 86400))
+    assert tracker.mode is BackendMode.ANTHROPIC
+
+
+def test_burn_rate_ignores_unknown_reset_times_rather_than_panic() -> None:
+    """Anthropic側もリセット時刻が不明なら、Ollamaと同じく最大見積もりになる。
+
+    残量比較に等化する(窓の時間正規化が効かない)ため、Ollama残100% vs Anthropic残99%
+    のような極端な差がなければ、重み1.1の分Anthropicが優先される。
+    """
+    tracker = QuotaTracker(
+        fallback_threshold_pct=10.0,
+        recovery_threshold_pct=20.0,
+        policy=RoutingPolicy.BURN_RATE_BALANCE,
+        anthropic_priority_weight=1.1,
+    )
+    tracker.observe_ollama(_ollama(session=0.0, weekly=0.0))
+    # リセット時刻無し(=分母1.0固定)。両窓の最小残量は99%。
+    # Anthropic: 0.99 × 1.1 = 1.089 > Ollama: 1.0
+    tracker.observe(_anthropic_with_resets(0.01, None, 0.01, None))
+    assert tracker.mode is BackendMode.ANTHROPIC
+
+
+def test_burn_rate_never_engages_when_a_session_window_is_low() -> None:
+    """short窓が逼迫している場合はバランスを試みず、通常の切替ロジックに委ねる。
+
+    Ollama残40%(floor 50%未満)ではバーンレート比較自体を行わない。
+    """
+    now = time.time()
+    tracker = QuotaTracker(
+        fallback_threshold_pct=10.0,
+        recovery_threshold_pct=20.0,
+        policy=RoutingPolicy.BURN_RATE_BALANCE,
+    )
+    tracker.observe_ollama(_ollama(session=0.6, weekly=0.0))
+    tracker.observe(_anthropic_with_resets(0.3, now + 4 * 3600, 0.1, now + 6 * 86400))
+    assert tracker.mode is BackendMode.ANTHROPIC
+    assert tracker.last_reason != "burn_rate_balance"

@@ -167,6 +167,13 @@ class RoutingConfig(BaseModel):
     #: weekly_balance は相手側がこの%%以上優っている場合のみ切り替える。
     #: 拮抗した2者間で振動するのを防ぐためのヒステリシス。
     balance_margin_pct: float = 10.0
+    #: burn_rate_balance: how much to favour Anthropic when comparing the two
+    #: sides' ability to serve until their windows reset. 1.0 is neutral; 1.1
+    #: means Anthropic needs to be ~9%% worse before traffic moves off it.
+    #: burn_rate_balance: 窓のリセットまでにどちらが長く捌けるかを比較する際の
+    #: Anthropic側の優先度。1.0なら同等扱い。1.1ならAnthropicが約9%%劣るまで
+    #: トラフィックを移さない。
+    anthropic_priority_weight: float = 1.1
     #: Consecutive Ollama failures that trigger the reverse failover.
     #: 逆フェイルオーバーを発動させるOllamaの連続失敗回数。
     ollama_failure_threshold: int = 5

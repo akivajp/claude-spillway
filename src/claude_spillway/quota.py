@@ -301,6 +301,12 @@ class RoutingPolicy(str, Enum):
     #: Spread load by preferring whichever side has more of its weekly window left.
     #: 週次窓の残量が多い方を優先して負荷を分散する。
     WEEKLY_BALANCE = "weekly_balance"
+    #: Prefer whichever side can serve longer relative to how long is left in its
+    #: windows - the escape hatch for a backend that is burning its quota faster
+    #: than its reset will allow.
+    #: 窓の残り時間に対してどちらが長く捌けるかを比べ、リセットまでに使い切りそうな
+    #: 側を避けるための安全弁。
+    BURN_RATE_BALANCE = "burn_rate_balance"
 
 
 class QuotaTracker:
@@ -326,6 +332,7 @@ class QuotaTracker:
         ollama_min_remaining_pct: float = 5.0,
         balance_session_floor_pct: float = 50.0,
         balance_margin_pct: float = 10.0,
+        anthropic_priority_weight: float = 1.1,
         ollama_failure_threshold: int = 5,
         reverse_failover_min_5h_pct: float = 10.0,
         reverse_failover_cooldown_seconds: float = 300.0,
@@ -341,6 +348,9 @@ class QuotaTracker:
         self._ollama_min_remaining = ollama_min_remaining_pct / 100.0
         self._balance_session_floor = balance_session_floor_pct / 100.0
         self._balance_margin = balance_margin_pct / 100.0
+        # バーンレート均衡でのAnthropic側の優先重み。1.0なら同等扱い。
+        # Anthropic's weight in the burn-rate comparison; 1.0 means neutral.
+        self._anthropic_weight = anthropic_priority_weight
         self._ollama_failure_threshold = ollama_failure_threshold
         self._reverse_min_5h = reverse_failover_min_5h_pct / 100.0
         self._reverse_cooldown = reverse_failover_cooldown_seconds
@@ -437,6 +447,10 @@ class QuotaTracker:
             target = self._weekly_balance_target()
             if target is not None:
                 return self._ensure(target, "weekly_balance")
+        elif self._policy is RoutingPolicy.BURN_RATE_BALANCE:
+            target = self._burn_rate_target()
+            if target is not None:
+                return self._ensure(target, "burn_rate_balance")
 
         # 4. Hysteresis: come back to Anthropic once it has recovered enough.
         #    ヒステリシス: 十分に回復したらAnthropicへ戻す。
@@ -481,6 +495,103 @@ class QuotaTracker:
         else:
             current, other, other_mode = ollama_weekly, anthropic_weekly, BackendMode.ANTHROPIC
         return other_mode if other - current >= self._balance_margin else self.mode
+
+    def _burn_rate_target(self) -> BackendMode | None:
+        """Pick the side that can serve longer relative to its windows' remaining time.
+
+        For each window compute ``remaining / (time left until reset / window
+        length)`` and adopt the smallest - the window that will run dry soonest
+        relative to how long it still has to last. A reset time we do not know
+        (Ollama never reports one) means assuming the window just started, i.e.
+        the most generous reading, so an unknown never manufactures urgency.
+
+        Anthropic gets a weight above 1.0 so that, at parity, we still favour
+        spending the Claude subscription we are already paying for.
+
+        各窓について「残量 ÷ (リセットまでの時間 ÷ 窓の全長)」を求め、最小値
+        (相対的に最も早く枯渇する窓)を採用する。リセット時刻が不明な場合
+        (Ollamaは常にこれに該当)は「窓が始まったばかり」と仮定して最も甘く見積もる。
+        不明であることを根拠に焦りを作らないためである。
+
+        Anthropic側には1.0超の重みを掛ける。拮抗した場合でも、支払っている
+        Claudeサブスクリプションの枠を優先して使うためである。
+        """
+        if self.ollama_snapshot is None or self.last_snapshot is None:
+            return None
+        anthropic = self._burn_rate(
+            session=self._anthropic_window(anthropic_5h=True),
+            session_reset=self.last_snapshot.reset_5h,
+            weekly=self._anthropic_window(anthropic_5h=False),
+            weekly_reset=self.last_snapshot.reset_7d,
+        )
+        # Ollamaはリセット時刻を返さないため、両窓とも「始まったばかり」扱いになる。
+        # Ollama never reports resets, so both windows take the generous reading.
+        ollama_snap = self.ollama_snapshot
+        ollama = self._burn_rate(
+            session=None if ollama_snap.session_utilization is None else 1.0 - ollama_snap.session_utilization,
+            session_reset=None,
+            weekly=ollama_snap.weekly_remaining_ratio(),
+            weekly_reset=None,
+        )
+        if anthropic is None or ollama is None:
+            return None
+        if not self._both_session_windows_comfortable():
+            return None
+
+        anthropic *= self._anthropic_weight
+        # マージン(ヒステリシス)を効かせ、拮抗した状態での振動を防ぐ。
+        # Apply the margin so near-parity does not make the mode oscillate.
+        if self.mode is BackendMode.ANTHROPIC:
+            current, other, other_mode = anthropic, ollama, BackendMode.FALLBACK
+        else:
+            current, other, other_mode = ollama, anthropic, BackendMode.ANTHROPIC
+        if current >= other * (1.0 + self._balance_margin):
+            return self.mode
+        return other_mode if other > current else self.mode
+
+    def _burn_rate(
+        self,
+        *,
+        session: float | None,
+        session_reset: float | None,
+        weekly: float | None,
+        weekly_reset: float | None,
+    ) -> float | None:
+        """Smallest time-normalized remaining ratio across the two windows.
+
+        各窓の時間正規化残量のうち最小のものを返す。
+        """
+        window_lengths = {"session": 5 * 3600, "weekly": 7 * 24 * 3600}
+        rates: list[float] = []
+        for remaining, reset, length in (
+            (session, session_reset, window_lengths["session"]),
+            (weekly, weekly_reset, window_lengths["weekly"]),
+        ):
+            if remaining is None:
+                continue
+            fraction_left = 1.0 if reset is None else max(0.0, reset - time.time()) / length
+            # リセット済み(残時間0)でも「始まったばかり」と同じ扱いにする。
+            # 次の観測で新しい値が入るため、ここで焦りを作る必要はない。
+            # A window that has already reset reads as freshly started too; the
+            # next observation will carry the new value, so no urgency here.
+            rates.append(remaining / max(fraction_left, 1e-9))
+        return min(rates) if rates else None
+
+    def _both_session_windows_comfortable(self) -> bool:
+        """True when both short windows hold at least the balance floor.
+
+        短い窓が両方ともバランス開始の下限を満たす場合に True。
+        """
+        if self.ollama_snapshot is None or self.ollama_snapshot.session_utilization is None:
+            return False
+        if self.last_snapshot is None or self.last_snapshot.utilization_5h is None:
+            return False
+        ollama_session = 1.0 - self.ollama_snapshot.session_utilization
+        anthropic_session = 1.0 - self.last_snapshot.utilization_5h
+        return (
+            anthropic_session >= self._balance_session_floor
+            and ollama_session >= self._balance_session_floor
+        )
 
     def _anthropic_window(self, *, anthropic_5h: bool) -> float | None:
         """Remaining ratio of one Anthropic window, or ``None`` when unknown.

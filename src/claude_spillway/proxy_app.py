@@ -67,6 +67,7 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
         ollama_min_remaining_pct=routing.ollama_min_remaining_pct,
         balance_session_floor_pct=routing.balance_session_floor_pct,
         balance_margin_pct=routing.balance_margin_pct,
+        anthropic_priority_weight=routing.anthropic_priority_weight,
         ollama_failure_threshold=routing.ollama_failure_threshold,
         reverse_failover_min_5h_pct=routing.reverse_failover_min_5h_pct,
         reverse_failover_cooldown_seconds=routing.reverse_failover_cooldown_seconds,

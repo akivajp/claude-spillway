@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import UTC, datetime
 
@@ -78,10 +79,18 @@ def _build_renderable(data: dict, url: str, error: str | None) -> Group:
     source = (data.get("anthropic") or {}).get("source")
     source_line = f"\nsource   : {t('monitor.source.' + source)}" if source else ""
 
+    # updated は現在時刻ではなく最新の観測時刻を表示する。現在時刻にすると
+    # 毎フレーム再描画の誘因になり、ちらつきを生むため。
+    # Show the freshest observation, not the wall clock: a running clock would
+    # force a redraw every frame and flicker with it.
+    observed = max(
+        (v for v in (anthropic.get("observed_at"), ollama.get("observed_at")) if v), default=None
+    ) if (anthropic := data.get("anthropic", {}), ollama := data.get("ollama", {})) else None
+    updated = _fmt_time(observed) if observed else datetime.now(tz=UTC).astimezone().strftime("%H:%M:%S")
     header = Panel(
         f"backend  : {mode_label}\n"
         f"endpoint : {url}\n"
-        f"updated  : {datetime.now(tz=UTC).astimezone().strftime('%H:%M:%S')}"
+        f"updated  : {updated}"
         f"{source_line}",
         title="claude-spillway monitor",
         border_style="cyan",
@@ -201,14 +210,27 @@ def _build_renderable(data: dict, url: str, error: str | None) -> Group:
 def run_monitor(host: str, port: int, interval: float) -> None:
     """Poll a running claude-spillway on the given host/port and render its state.
 
+    Redrawing is the only thing a TUI can do badly: doing it faster than the
+    data changes makes the panel flicker without telling the user anything, so
+    the automatic refresh is disabled and a frame is rendered only when the
+    status payload actually differs from the previous one.
+
     指定ホスト・ポートで稼働中のclaude-spillwayの状態を定期ポーリングして表示する。
+    TUIで失败しやすいのは再描画の方である。データが変化していないのに高頻度で
+    再描画すると、何の情報も増やさずに画面がちらつく。そのため自動再描画を無効化し、
+    statusの内容が前回と異なるときだけフレームを描き直す。
     """
     url = f"http://{host}:{port}/_spillway/status"
     console = Console()
     client = httpx.Client(timeout=5.0)
+    # 直近フレームの指紋。statusのJSONとエラー文言が同一なら再描画しない。
+    # Fingerprint of the last rendered frame: same payload and error, no redraw.
+    last_frame: tuple[str, str | None] | None = None
 
     try:
-        with Live(console=console, refresh_per_second=4, screen=False) as live:
+        # auto_refresh=False: 自前の4Hz再描画がちらつきの原因だった。
+        # auto_refresh=False: its own 4 Hz redraw was the flicker.
+        with Live(console=console, auto_refresh=False, screen=False) as live:
             while True:
                 error: str | None = None
                 data: dict = {}
@@ -218,7 +240,18 @@ def run_monitor(host: str, port: int, interval: float) -> None:
                     data = resp.json()
                 except httpx.HTTPError as exc:
                     error = t("monitor.error.body", url=url, error=exc)
-                live.update(_build_renderable(data, url, error))
+                # uptime_seconds は取得のたびに増えるため指紋から除外する。
+                # これが含まれると毎回「変化あり」扱いになり、比較が無意味になる。
+                # uptime_seconds grows on every poll, so it is excluded from the
+                # fingerprint: kept in, every poll would count as a change.
+                if isinstance(data.get("uptime_seconds"), (int, float)):
+                    stable = {k: v for k, v in data.items() if k != "uptime_seconds"}
+                else:
+                    stable = data
+                frame = (json.dumps(stable, sort_keys=True), error)
+                if frame != last_frame:
+                    last_frame = frame
+                    live.update(_build_renderable(data, url, error), refresh=True)
                 time.sleep(interval)
     except KeyboardInterrupt:
         pass
