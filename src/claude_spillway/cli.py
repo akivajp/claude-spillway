@@ -1,4 +1,4 @@
-"""``claude-spillway`` コマンドラインエントリーポイント。"""
+"""``claude-spillway`` command line entry point. / ``claude-spillway`` コマンドラインエントリーポイント。"""
 
 from __future__ import annotations
 
@@ -10,48 +10,51 @@ from rich.console import Console
 from rich.logging import RichHandler
 
 from .config import Settings
+from .i18n import t
 
 console = Console()
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
+    # All help text goes through the message catalog so that the CLI speaks
+    # English by default and Japanese only under a Japanese locale.
+    # ヘルプ文言はすべてメッセージカタログ経由にして、既定は英語、
+    # 日本語ロケールのときだけ日本語になるようにしている。
     parser = argparse.ArgumentParser(
         prog="claude-spillway",
-        description=(
-            "Claude Code用のquota連動フェイルオーバープロキシ。"
-            "Anthropicの利用枠(5時間窓/週次窓)が逼迫すると自動的にOllama Cloudへ"
-            "切り替え、回復したらAnthropicへ戻します。"
-        ),
+        description=t("cli.description"),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    serve = subparsers.add_parser("serve", help="プロキシサーバーを起動する")
-    serve.add_argument("-c", "--config", type=Path, default=None, help="設定YAMLファイルへのパス")
-    serve.add_argument("--host", type=str, default=None, help="待受ホスト(設定ファイルを上書き)")
-    serve.add_argument("--port", type=int, default=None, help="待受ポート(設定ファイルを上書き)")
+    serve = subparsers.add_parser("serve", help=t("cli.serve.help"))
+    serve.add_argument("-c", "--config", type=Path, default=None, help=t("cli.serve.config"))
+    serve.add_argument("--host", type=str, default=None, help=t("cli.serve.host"))
+    serve.add_argument("--port", type=int, default=None, help=t("cli.serve.port"))
     serve.add_argument(
         "--fallback-threshold-pct",
         type=float,
         default=None,
-        help="残量がこの%%を下回るとOllamaへフェイルオーバーする(デフォルト: 10)",
+        help=t("cli.serve.fallback_threshold"),
     )
     serve.add_argument(
         "--recovery-threshold-pct",
         type=float,
         default=None,
-        help="残量がこの%%まで回復するとAnthropicへ戻す(デフォルト: 20)",
+        help=t("cli.serve.recovery_threshold"),
     )
-    serve.add_argument("--log-level", type=str, default=None, help="ログレベル(DEBUG/INFO/WARNING/ERROR)")
+    serve.add_argument("--log-level", type=str, default=None, help=t("cli.serve.log_level"))
 
-    monitor = subparsers.add_parser("monitor", help="稼働中プロキシの状態をTUIで監視する")
-    monitor.add_argument("--host", type=str, default="127.0.0.1", help="監視対象プロキシのホスト")
-    monitor.add_argument("--port", type=int, default=8787, help="監視対象プロキシのポート")
-    monitor.add_argument("--interval", type=float, default=1.0, help="ポーリング間隔(秒)")
+    monitor = subparsers.add_parser("monitor", help=t("cli.monitor.help"))
+    monitor.add_argument("--host", type=str, default="127.0.0.1", help=t("cli.monitor.host"))
+    monitor.add_argument("--port", type=int, default=8787, help=t("cli.monitor.port"))
+    monitor.add_argument("--interval", type=float, default=1.0, help=t("cli.monitor.interval"))
 
     return parser
 
 
 def _apply_overrides(settings: Settings, args: argparse.Namespace) -> Settings:
+    # CLI flags win over the YAML config file.
+    # コマンドラインの指定は設定ファイルより優先される。
     data = settings.model_dump()
     if args.host is not None:
         data["listen"]["host"] = args.host
@@ -80,6 +83,9 @@ def _run_serve(args: argparse.Namespace) -> None:
     settings = _apply_overrides(settings, args)
     _setup_logging(settings.log_level)
 
+    # The startup banner only prints field names and values, so it stays
+    # identical in every locale.
+    # 起動時バナーは項目名と値だけなので、どのロケールでも表示は共通。
     console.rule("[bold cyan]claude-spillway[/bold cyan]")
     console.print(f"listen         : {settings.listen.host}:{settings.listen.port}")
     console.print(f"anthropic      : {settings.anthropic.base_url}")
@@ -90,9 +96,7 @@ def _run_serve(args: argparse.Namespace) -> None:
     )
     console.print(f"probe interval : {settings.quota.probe_interval_seconds}s")
     if not settings.ollama.api_key:
-        console.print(
-            "[yellow]warning: ollama.api_key が未設定です。フェイルオーバー時のリクエストは失敗します。[/yellow]"
-        )
+        console.print(f"[yellow]{t('cli.warn.no_ollama_key')}[/yellow]")
 
     from .server import run_server
 

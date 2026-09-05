@@ -94,6 +94,17 @@ uv sync
 
 `claude-spillway serve`のCLIオプション(`--host`, `--port`, `--fallback-threshold-pct`, `--recovery-threshold-pct`, `--log-level`)は設定ファイルより優先されます。詳細は`claude-spillway --help` / `claude-spillway serve --help` / `claude-spillway monitor --help`を実行してください。
 
+### 表示言語
+
+CLIのヘルプや`monitor`のTUIは、デフォルトでは英語で表示され、環境のロケール(`LC_ALL`, `LC_MESSAGES`, `LANG`, `LANGUAGE`のいずれかが`ja`始まり)が日本語の場合のみ日本語で表示されます。`CLAUDE_SPILLWAY_LANG`で明示的に上書きできます:
+
+```bash
+CLAUDE_SPILLWAY_LANG=en claude-spillway monitor  # 英語に固定
+CLAUDE_SPILLWAY_LANG=ja claude-spillway monitor  # 日本語に固定
+```
+
+なお、`logging`経由のログメッセージは、grepや検索のしやすさを優先して常に英語で出力されます。
+
 ## 開発
 
 ```bash

@@ -122,6 +122,7 @@ fake upstream servers — see
 ## Configuration
 
 See [`config.example.yaml`](config.example.yaml) for the full reference.
+
 Key fields:
 
 | Field | Default | Description |
@@ -140,6 +141,21 @@ CLI flags on `claude-spillway serve` (`--host`, `--port`,
 override the config file. Run `claude-spillway --help` /
 `claude-spillway serve --help` / `claude-spillway monitor --help` for
 details.
+
+### Interface language
+
+CLI help text and the `monitor` TUI are shown in English by default, and in
+Japanese when the environment locale asks for it (`LC_ALL`, `LC_MESSAGES`,
+`LANG` or `LANGUAGE` starting with `ja`). Set `CLAUDE_SPILLWAY_LANG` to
+override the detection explicitly:
+
+```bash
+CLAUDE_SPILLWAY_LANG=en claude-spillway monitor  # force English
+CLAUDE_SPILLWAY_LANG=ja claude-spillway monitor  # force Japanese
+```
+
+Log records emitted through `logging` are always in English, so they stay
+easy to grep and to search for online.
 
 ## Development
 

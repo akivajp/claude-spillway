@@ -1,4 +1,7 @@
-"""Claude Codeから見て `ANTHROPIC_BASE_URL` の向き先となるFastAPIアプリ。"""
+"""FastAPI app that Claude Code points ``ANTHROPIC_BASE_URL`` at.
+
+Claude Codeから見て ``ANTHROPIC_BASE_URL`` の向き先となるFastAPIアプリ。
+"""
 
 from __future__ import annotations
 
@@ -18,6 +21,10 @@ from .recovery import RecoveryProbe
 
 logger = logging.getLogger("claude_spillway.proxy")
 
+#: The one and only endpoint subject to failover. count_tokens, model listing
+#: and friends always go to Anthropic because Ollama's compatibility shim is
+#: unstable for them (ollama/ollama#13949).
+#:
 #: フェイルオーバーの対象とする唯一のエンドポイント。
 #: count_tokens やモデル一覧取得等はOllamaの互換シムが不安定なため
 #: (ollama/ollama#13949) 常にAnthropicへ流す。
@@ -27,7 +34,10 @@ _STARTED_AT = time.time()
 
 
 def create_app(settings: Settings, backends: ProxyBackends | None = None) -> FastAPI:
-    """アプリを構築する。``backends`` はテストからモック注入するために公開している。"""
+    """Build the app. ``backends`` is exposed so tests can inject a mock.
+
+    アプリを構築する。``backends`` はテストからモック注入するために公開している。
+    """
     backends = backends or ProxyBackends(settings)
     tracker = QuotaTracker(
         fallback_threshold_pct=settings.quota.fallback_threshold_pct,
@@ -38,6 +48,8 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
     @asynccontextmanager
     async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
+        # Shut down the background probe and the HTTP clients on exit.
+        # 終了時にバックグラウンドプローブとHTTPクライアントを片付ける。
         await recovery_probe.stop()
         await backends.aclose()
 
@@ -49,7 +61,10 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
 
     @app.get("/_spillway/status")
     async def status() -> JSONResponse:
-        """現在のバックエンドモードやquota観測値を返す監視用エンドポイント(TUIから利用)。"""
+        """Monitoring endpoint (used by the TUI) reporting mode and quota readings.
+
+        現在のバックエンドモードやquota観測値を返す監視用エンドポイント(TUIから利用)。
+        """
         snapshot = tracker.last_snapshot
         stats = backends.ollama_stats
         return JSONResponse(
@@ -70,6 +85,8 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
                     "observed_at": snapshot.observed_at if snapshot else None,
                 },
                 "ollama": {
+                    # Ollama Cloud has no official quota API (as of 2026-09),
+                    # so only this proxy's self-measured counters are exposed.
                     # Ollama Cloudには公式のquota取得APIが無いため(2026-09時点)、
                     # このプロキシが中継したリクエストの自己計測値のみを提供する。
                     "requests_sent": stats.requests_sent,
@@ -108,6 +125,7 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
                     recovery_probe.start()
             return to_streaming_response(response)
 
+        # Reached only when this is the failover target AND we are in FALLBACK.
         # ここに来るのは is_failover_target かつ tracker.mode が FALLBACK の場合のみ。
         requested_model: str | None = None
         try:

@@ -1,4 +1,7 @@
-"""YAML設定ファイルとCLI上書きを扱う設定モデル群。"""
+"""Settings models backing the YAML config file and CLI overrides.
+
+YAML設定ファイルとCLI上書きを扱う設定モデル群。
+"""
 
 from __future__ import annotations
 
@@ -13,9 +16,14 @@ from pydantic import BaseModel, Field
 
 _ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
-
 def _expand_env_vars(value: Any) -> Any:
-    """設定値中の ``${ENV_VAR}`` をプロセス環境変数の値で置換する(APIキーの直書き回避用)。"""
+    """Replace ``${ENV_VAR}`` in config values with the process environment.
+
+    This lets the config file reference an API key instead of embedding it.
+
+    設定値中の ``${ENV_VAR}`` をプロセス環境変数の値で置換する
+    (APIキーを設定ファイルに直書きせずに済むようにするため)。
+    """
     if isinstance(value, str):
 
         def _replace(match: re.Match[str]) -> str:
@@ -44,32 +52,43 @@ class OllamaConfig(BaseModel):
 
 
 class QuotaConfig(BaseModel):
+    #: Fail over to Ollama once the remaining ratio drops below this percentage.
     #: この残量%%を下回ったらOllamaへフェイルオーバーする
     fallback_threshold_pct: float = 10.0
+    #: Switch back to Anthropic at this percentage (hysteresis: prevents flapping).
     #: この残量%%まで回復したらAnthropicへ切り戻す(ヒステリシス。flapping防止)
     recovery_threshold_pct: float = 20.0
+    #: Interval between recovery probes while in fallback mode, in seconds.
     #: フォールバック中、Anthropicの回復確認を行う間隔(秒)
     probe_interval_seconds: float = 60.0
+    #: max_tokens for the recovery probe (keep it tiny to barely consume quota).
     #: 回復確認プローブに使うmax_tokens(できるだけ小さくしてquota消費を抑える)
     probe_max_tokens: int = 1
+    #: Model used by the recovery probe (a lightweight one is recommended).
     #: 回復確認プローブに使うモデル(軽量モデル推奨)
     probe_model: str = "claude-haiku-4-5-20251001"
 
 
 class ModelMappingRule(BaseModel):
+    #: fnmatch-style glob pattern (e.g. "claude-opus-*").
     #: fnmatch形式のグロブパターン(例: "claude-opus-*")
     match: str
+    #: Ollama-side model name to use when the pattern matches.
     #: マッチした場合に使うOllama側のモデル名
     target: str
 
 
 class ModelMappingConfig(BaseModel):
+    #: Fallback used when no rule matches.
     #: どのルールにもマッチしなかった場合のデフォルト
     default: str = "gpt-oss:120b"
     rules: list[ModelMappingRule] = Field(default_factory=list)
 
     def resolve(self, requested_model: str) -> str:
-        """Anthropicのモデル名からOllama側のモデル名を決定する。"""
+        """Map an Anthropic model name to the Ollama-side model name.
+
+        Anthropicのモデル名からOllama側のモデル名を決定する。
+        """
         for rule in self.rules:
             if fnmatch.fnmatch(requested_model, rule.match):
                 return rule.target
@@ -86,7 +105,13 @@ class Settings(BaseModel):
 
     @classmethod
     def load(cls, config_path: Path | None) -> Settings:
-        """YAMLファイルを読み込んで :class:`Settings` を構築する。ファイル未指定/未存在時はデフォルト値のみ。"""
+        """Build :class:`Settings` from a YAML file, or from defaults alone.
+
+        A missing or unspecified path is not an error: every field has a default.
+
+        YAMLファイルを読み込んで :class:`Settings` を構築する。
+        ファイル未指定/未存在時はエラーとせず、デフォルト値のみで構築する。
+        """
         data: dict[str, Any] = {}
         if config_path is not None and config_path.exists():
             with config_path.open("r", encoding="utf-8") as f:

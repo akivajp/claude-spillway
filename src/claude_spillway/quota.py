@@ -1,4 +1,7 @@
-"""Anthropicのレート制限ヘッダーを解析し、バックエンド切替の要否を判断するモジュール。"""
+"""Parse Anthropic's rate-limit headers and decide when to switch backends.
+
+Anthropicのレート制限ヘッダーを解析し、バックエンド切替の要否を判断するモジュール。
+"""
 
 from __future__ import annotations
 
@@ -10,7 +13,10 @@ import httpx
 
 
 class BackendMode(str, Enum):
-    """現在リクエストを転送しているバックエンドの種類。"""
+    """Which backend requests are currently forwarded to.
+
+    現在リクエストを転送しているバックエンドの種類。
+    """
 
     ANTHROPIC = "anthropic"
     FALLBACK = "fallback"
@@ -18,7 +24,10 @@ class BackendMode(str, Enum):
 
 @dataclass(frozen=True)
 class QuotaSnapshot:
-    """Anthropicのレスポンスヘッダーから読み取った、ある時点での利用状況。"""
+    """Usage at a point in time, read from Anthropic's response headers.
+
+    Anthropicのレスポンスヘッダーから読み取った、ある時点での利用状況。
+    """
 
     utilization_5h: float | None
     utilization_7d: float | None
@@ -27,8 +36,13 @@ class QuotaSnapshot:
     observed_at: float
 
     def remaining_ratio(self) -> float | None:
-        """既知の指標のうち最も逼迫している(残量が少ない)値を返す。
+        """Return the tightest (smallest) remaining ratio among known signals.
 
+        We want to fail over early if any one of the 5-hour window, weekly
+        window, request count or token count is close to exhaustion, so the
+        minimum is used.
+
+        既知の指標のうち最も逼迫している(残量が少ない)値を返す。
         5時間窓・週次窓・リクエスト数・トークン数のいずれか1つでも枯渇に
         近づけば早めにフェイルオーバーしたいため、最小値を採用する。
         """
@@ -67,7 +81,12 @@ def _parse_remaining_ratio(
 
 
 def parse_quota_headers(headers: httpx.Headers) -> QuotaSnapshot:
-    """Anthropic APIのレスポンスヘッダーから :class:`QuotaSnapshot` を組み立てる。
+    """Build a :class:`QuotaSnapshot` from Anthropic API response headers.
+
+    Claude Code on a subscription (Pro/Max/Team) receives
+    ``anthropic-ratelimit-unified-{5h,7d}-utilization``, while API-key billing
+    receives ``anthropic-ratelimit-{requests,tokens}-*``. Both are supported;
+    only the headers that are actually present get read.
 
     サブスクリプション(Pro/Max/Team)経由のClaude Codeでは
     ``anthropic-ratelimit-unified-{5h,7d}-utilization`` が、
@@ -92,8 +111,13 @@ def parse_quota_headers(headers: httpx.Headers) -> QuotaSnapshot:
 
 
 class QuotaTracker:
-    """現在のバックエンドモードを保持し、閾値に基づいて切替を判断する状態機械。
+    """State machine holding the current backend mode and threshold decisions.
 
+    Keeping fallback_threshold_pct and recovery_threshold_pct apart creates
+    hysteresis, which stops the mode from flapping while the remaining ratio
+    hovers around a single threshold.
+
+    現在のバックエンドモードを保持し、閾値に基づいて切替を判断する状態機械。
     fallback_threshold_pct と recovery_threshold_pct の間にヒステリシスを
     設けることで、残量が閾値付近で微振動して頻繁に切り替わる
     (flapping)のを防ぐ。
@@ -112,10 +136,15 @@ class QuotaTracker:
         self.last_switch_at: float = time.time()
 
     def observe(self, snapshot: QuotaSnapshot) -> BackendMode:
-        """新しいスナップショットを取り込み、必要なら切り替えて結果のモードを返す。"""
+        """Take in a new snapshot, switch mode if needed, and return the mode.
+
+        新しいスナップショットを取り込み、必要なら切り替えて結果のモードを返す。
+        """
         self.last_snapshot = snapshot
         ratio = snapshot.remaining_ratio()
         if ratio is None:
+            # No usable signal in this response; keep the current mode.
+            # 判断材料が無いレスポンスなので、現在のモードを維持する。
             return self.mode
 
         if self.mode is BackendMode.ANTHROPIC and ratio < self._fallback_threshold:

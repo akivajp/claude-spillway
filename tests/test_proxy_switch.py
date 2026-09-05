@@ -1,4 +1,9 @@
-"""プロキシ全体の結合テスト。実際のネットワークには一切アクセスせず、
+"""Integration tests for the whole proxy.
+
+No real network access is involved: both the Anthropic and the Ollama
+responses are faked with httpx.MockTransport.
+
+プロキシ全体の結合テスト。実際のネットワークには一切アクセスせず、
 httpx.MockTransport でAnthropic/Ollama双方の応答を偽装して検証する。
 """
 
@@ -54,6 +59,7 @@ def _ollama_messages_handler(request: httpx.Request) -> httpx.Response:
 
 
 async def test_failover_then_recovery(settings: Settings) -> None:
+    # 1st call = plenty of quota, 2nd = 5% left (below the 10% threshold) -> switch.
     # 1回目=十分な残量、2回目=残5%(閾値10%未満)で切替が起きる
     anthropic_transport = httpx.MockTransport(_anthropic_messages_handler([0.5, 0.95, 0.95]))
     ollama_transport = httpx.MockTransport(_ollama_messages_handler)
@@ -74,12 +80,14 @@ async def test_failover_then_recovery(settings: Settings) -> None:
         assert r1.json()["id"] == "msg_test"
         assert app.state.tracker.mode is BackendMode.ANTHROPIC
 
+        # Observing this response's quota header (5% left) flips us to fallback.
         # このレスポンスのquotaヘッダー(残5%)を観測した結果、以後はfallbackになる
         r2 = await client.post("/v1/messages", json=payload, headers=headers)
         assert r2.status_code == 200
         assert r2.json()["id"] == "msg_test"
         assert app.state.tracker.mode is BackendMode.FALLBACK
 
+        # The 3rd call is routed to Ollama, with the model name mapped over.
         # 3回目はOllamaへルーティングされ、モデル名もマッピングされる
         r3 = await client.post("/v1/messages", json=payload, headers=headers)
         assert r3.status_code == 200
@@ -109,6 +117,7 @@ async def test_count_tokens_never_routed_to_ollama_even_in_fallback(settings: Se
         ollama_transport=httpx.MockTransport(ollama_handler),
     )
     app = create_app(settings, backends=backends)
+    # Force the app into fallback mode to reproduce the situation.
     # 既にフォールバック中であることを強制的に再現する
     app.state.tracker.mode = BackendMode.FALLBACK
 
@@ -146,7 +155,10 @@ async def test_status_endpoint_reports_mode(settings: Settings) -> None:
 
 
 async def test_head_healthcheck_is_forwarded_to_anthropic(settings: Settings) -> None:
-    """Claude CodeはHEAD /api/helloで接続確認を行うため、405にせず転送できる必要がある。"""
+    """Claude Code health-checks with HEAD /api/hello, so it must be forwarded, not 405ed.
+
+    Claude CodeはHEAD /api/helloで接続確認を行うため、405にせず転送できる必要がある。
+    """
     calls = {"anthropic": 0}
 
     def anthropic_handler(request: httpx.Request) -> httpx.Response:

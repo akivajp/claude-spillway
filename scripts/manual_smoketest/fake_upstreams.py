@@ -1,5 +1,9 @@
-"""claude-spillwayの実プロセス検証用に、AnthropicとOllama Cloudを模した
-ダミーHTTPサーバーを2つ立てるスクリプト(検証専用、リポジトリには含めない)。
+"""Two dummy HTTP servers standing in for Anthropic and Ollama Cloud.
+
+Used to smoke-test claude-spillway as a real process, against no real API.
+
+claude-spillwayの実プロセス検証用に、AnthropicとOllama Cloudを模した
+ダミーHTTPサーバーを2つ立てるスクリプト(検証専用)。
 """
 
 from __future__ import annotations
@@ -8,6 +12,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# Utilization changes per call (1st = plenty of quota, then nearly exhausted).
 # 呼び出す毎に utilization を切り替える(1回目=低負荷, 2回目以降=高負荷)
 _anthropic_call_count = {"n": 0}
 _UTILIZATIONS = [0.5, 0.95, 0.95, 0.95]

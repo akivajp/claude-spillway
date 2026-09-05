@@ -1,4 +1,4 @@
-"""quota.py の単体テスト。"""
+"""Unit tests for quota.py. / quota.py の単体テスト。"""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ def test_parse_quota_headers_unified() -> None:
     snapshot = parse_quota_headers(headers)
     assert snapshot.utilization_5h == pytest.approx(0.92)
     assert snapshot.utilization_7d == pytest.approx(0.40)
+    # The 5h window is the tightest one (8% left), so the minimum wins.
     # 5時間窓の方が逼迫している(残8%) -> 最小値が採用される
     assert snapshot.remaining_ratio() == pytest.approx(0.08)
 
@@ -62,10 +63,12 @@ def test_tracker_hysteresis_prevents_flapping() -> None:
     tracker.observe(parse_quota_headers(httpx.Headers({"anthropic-ratelimit-unified-5h-utilization": "0.95"})))
     assert tracker.mode is BackendMode.FALLBACK
 
+    # Back up to 15% left, still short of the 20% recovery threshold: stay in fallback.
     # 残り15% まで戻ったが、recovery閾値(残り20%)にはまだ届いていないので切り戻らない
     tracker.observe(parse_quota_headers(httpx.Headers({"anthropic-ratelimit-unified-5h-utilization": "0.85"})))
     assert tracker.mode is BackendMode.FALLBACK
 
+    # Recovered to 25% left, so we switch back.
     # 残り25% まで回復したので切り戻る
     tracker.observe(parse_quota_headers(httpx.Headers({"anthropic-ratelimit-unified-5h-utilization": "0.75"})))
     assert tracker.mode is BackendMode.ANTHROPIC

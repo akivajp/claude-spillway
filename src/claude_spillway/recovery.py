@@ -1,4 +1,7 @@
-"""フォールバック中にAnthropicのquota回復を定期確認するバックグラウンドタスク。"""
+"""Background task that polls Anthropic for quota recovery while in fallback.
+
+フォールバック中にAnthropicのquota回復を定期確認するバックグラウンドタスク。
+"""
 
 from __future__ import annotations
 
@@ -11,12 +14,16 @@ from .quota import BackendMode, QuotaTracker, parse_quota_headers
 
 logger = logging.getLogger("claude_spillway.recovery")
 
+# Headers stashed away while relaying, to be reused by the recovery probe.
 # 転送を横流しする際に一緒に保存しておく、回復確認プローブへ再利用するヘッダー。
 _CAPTURED_HEADER_NAMES = ("authorization", "x-api-key", "anthropic-version")
 
 
 class RecoveryProbe:
-    """フォールバックモード中、一定間隔でAnthropicへ軽量リクエストを送り回復を検知する。"""
+    """While in fallback, ping Anthropic periodically to detect recovery.
+
+    フォールバックモード中、一定間隔でAnthropicへ軽量リクエストを送り回復を検知する。
+    """
 
     def __init__(self, settings: Settings, backends: ProxyBackends, tracker: QuotaTracker) -> None:
         self._settings = settings
@@ -26,12 +33,17 @@ class RecoveryProbe:
         self._captured_headers: dict[str, str] = {}
 
     def capture_auth_headers(self, headers: dict[str, str]) -> None:
-        """通常モードでの転送時に、認証ヘッダーを控えておく(プローブ送信用)。"""
+        """Stash the auth headers seen while relaying normally (for probing).
+
+        通常モードでの転送時に、認証ヘッダーを控えておく(プローブ送信用)。
+        """
         for name in _CAPTURED_HEADER_NAMES:
             if name in headers:
                 self._captured_headers[name] = headers[name]
 
     def start(self) -> None:
+        # Idempotent: a probe loop is only started if none is running.
+        # 冪等: 既に走っているループがある場合は新たに起動しない。
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._run())
 
@@ -45,11 +57,15 @@ class RecoveryProbe:
         try:
             while self._tracker.mode is BackendMode.FALLBACK:
                 await asyncio.sleep(interval)
+                # The mode may have changed while we slept; re-check before probing.
+                # 待機中にモードが変わっている可能性があるため、送信前に再確認する。
                 if self._tracker.mode is not BackendMode.FALLBACK:
                     return
                 try:
                     await self._probe_once()
                 except Exception:
+                    # A failed probe must not kill the loop; try again next tick.
+                    # プローブの失敗でループを止めないよう、次回に持ち越す。
                     logger.exception("recovery probe failed")
         except asyncio.CancelledError:
             pass
