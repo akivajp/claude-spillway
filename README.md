@@ -82,6 +82,19 @@ Two caveats. It is undocumented, so a shape change degrades to "no data" rather
 than an error. And unlike Anthropic, **Ollama reports no reset times**, so
 nothing in this tool can tell you when an Ollama window turns over.
 
+### About Ollama's reset times (estimated)
+
+No API reports them (see [.github/TODO.md](.github/TODO.md) for the full
+investigation), so the monitor estimates instead: utilization cannot fall until
+a window resets, so the first observed rise marks the start of a fresh window,
+and "that rise + the window's maximum length" (5h for session, 7d for weekly)
+is the latest the reset could have been. The estimate is an **upper bound**, not
+the truth, so the TUI prefixes it with a `~`.
+
+Estimates are display-only. Routing decisions never read them -
+`burn_rate_balance` treats a window with an unknown reset as freshly started,
+which needs no estimate at all.
+
 The status endpoint and TUI still also report self-tracked counters (requests
 relayed, failures, last status code) covering only the traffic that passed
 through this proxy.

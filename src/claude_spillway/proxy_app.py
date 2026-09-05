@@ -136,6 +136,16 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
                     ),
                     "remaining_ratio": ollama_snapshot.remaining_ratio() if ollama_snapshot else None,
                     "observed_at": ollama_snapshot.observed_at if ollama_snapshot else None,
+                    # 予測リセット時刻。利用率の上昇から求めた「リセットが確実に
+                    # 済んでいる上限」であり、真の値はこれより早い可能性がある。
+                    # Estimated resets: an upper bound derived from utilization
+                    # rises. The true reset may be much earlier than either.
+                    "estimated_session_reset": (
+                        ollama_snapshot.estimated_session_reset if ollama_snapshot else None
+                    ),
+                    "estimated_weekly_reset": (
+                        ollama_snapshot.estimated_weekly_reset if ollama_snapshot else None
+                    ),
                     "weekly_models": (
                         [{"name": n, "request_count": c} for n, c in ollama_snapshot.weekly_models]
                         if ollama_snapshot

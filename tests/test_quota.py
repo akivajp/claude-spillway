@@ -9,9 +9,12 @@ import httpx
 import pytest
 
 from claude_spillway.quota import (
+    OLLAMA_SESSION_WINDOW_SECONDS,
+    OLLAMA_WEEKLY_WINDOW_SECONDS,
     SOURCE_HEADERS,
     SOURCE_USAGE_API,
     BackendMode,
+    OllamaResetEstimator,
     OllamaSnapshot,
     QuotaSnapshot,
     QuotaTracker,
@@ -484,3 +487,98 @@ def test_overdrawn_anthropic_fails_over_immediately() -> None:
     assert tracker.observe(
         parse_quota_headers(httpx.Headers({"anthropic-ratelimit-unified-5h-utilization": "1.05"}))
     ) is BackendMode.FALLBACK
+
+
+def test_reset_estimator_bounds_from_utilization_rises() -> None:
+    """利用率の上昇を窓の始点とみなし、「始点＋窓長」を上限として返すこと。
+
+    A rise marks a fresh window, so the estimate is rise time + window length -
+    the latest the reset could have been, never the truth.
+    """
+    estimator = OllamaResetEstimator()
+
+    # 1回目: 上昇が無いため予測も立たない / first reading, no rise, no estimate
+    s1 = estimator.update(parse_ollama_usage({"limits": {"session": {"usage": 0.2}}}))
+    assert s1.estimated_session_reset is None
+
+    # 2回目: 上昇 → 上限値を予測 / a rise, so the bound is now + window length
+    t2 = time.time()
+    s2 = estimator.update(
+        OllamaSnapshot(session_utilization=0.5, weekly_utilization=None, observed_at=t2)
+    )
+    assert s2.estimated_session_reset == pytest.approx(
+        t2 + OLLAMA_SESSION_WINDOW_SECONDS
+    )
+
+    # 3回目: さらに上昇 → 上限値が更新される / another rise re-bounds it
+    t3 = t2 + 3600
+    s3 = estimator.update(
+        OllamaSnapshot(session_utilization=0.7, weekly_utilization=None, observed_at=t3)
+    )
+    assert s3.estimated_session_reset == pytest.approx(
+        t3 + OLLAMA_SESSION_WINDOW_SECONDS
+    )
+
+
+def test_reset_estimator_ignores_falling_or_equal_utilization() -> None:
+    """利用率が下がるのは通常の利用の帰結であり、窓の切替を意味しないこと。
+
+    A fall is what ordinary usage does; only a rise can mark a fresh window.
+    """
+    estimator = OllamaResetEstimator()
+    s1 = estimator.update(parse_ollama_usage({"limits": {"session": {"usage": 0.5}}}))
+    assert s1.estimated_session_reset is None
+
+    # 下がっても予測は立たない / a fall yields no estimate
+    s2 = estimator.update(
+        OllamaSnapshot(session_utilization=0.3, weekly_utilization=None, observed_at=time.time())
+    )
+    assert s2.estimated_session_reset is None
+
+
+def test_reset_estimator_handles_weekly_window_independently() -> None:
+    """セッション窓と週次窓が独立に予測されること。
+
+    The two windows rise at different times and are tracked separately.
+    """
+    estimator = OllamaResetEstimator()
+    t0 = time.time()
+    # 初回は予測なし / the first reading yields no estimates
+    s0 = estimator.update(parse_ollama_usage({"limits": {"session": {"usage": 0.1}, "weekly": {"usage": 0.1}}}))
+    assert s0.estimated_session_reset is None
+    assert s0.estimated_weekly_reset is None
+
+    # 週次だけ上昇 / only the weekly window rises
+    s1 = estimator.update(
+        OllamaSnapshot(session_utilization=0.1, weekly_utilization=0.3, observed_at=t0)
+    )
+    assert s1.estimated_session_reset is None
+    assert s1.estimated_weekly_reset == pytest.approx(t0 + OLLAMA_WEEKLY_WINDOW_SECONDS)
+
+    # その後セッション窓が上昇しても、週次の予測値は変わらない
+    # A later session rise must not disturb the weekly estimate
+    t1 = t0 + 7200
+    s2 = estimator.update(
+        OllamaSnapshot(session_utilization=0.4, weekly_utilization=0.3, observed_at=t1)
+    )
+    assert s2.estimated_session_reset == pytest.approx(t1 + OLLAMA_SESSION_WINDOW_SECONDS)
+    assert s2.estimated_weekly_reset == pytest.approx(t0 + OLLAMA_WEEKLY_WINDOW_SECONDS)
+
+
+def test_reset_estimator_survives_a_none_reading() -> None:
+    """欠損値を挟んでも予測が壊れないこと。
+
+    A None reading in between must not corrupt the tracker.
+    """
+    estimator = OllamaResetEstimator()
+    t0 = time.time()
+    estimator.update(OllamaSnapshot(session_utilization=0.2, weekly_utilization=None, observed_at=t0))
+    # 欠損 / a missing reading
+    estimator.update(OllamaSnapshot(session_utilization=None, weekly_utilization=None, observed_at=t0 + 60))
+    # 欠損を挟んだ上で上昇 / a rise after the gap
+    s = estimator.update(
+        OllamaSnapshot(session_utilization=0.6, weekly_utilization=None, observed_at=t0 + 120)
+    )
+    assert s.estimated_session_reset == pytest.approx(
+        t0 + 120 + OLLAMA_SESSION_WINDOW_SECONDS
+    )

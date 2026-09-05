@@ -130,6 +130,19 @@ class OllamaSnapshot:
     #: Requests per model within the weekly window, most used first.
     #: 週次窓におけるモデル別リクエスト数(多い順)。
     weekly_models: tuple[tuple[str, int], ...] = ()
+    #: ESTIMATED reset times, derived by assuming a window started when its
+    #: utilization last rose. A rising utilization marks the start of a fresh
+    #: window, so "start + window length" bounds when it must reset - the
+    #: estimate is a latest-possible-reset, not the true value. ``None`` until
+    #: the first rise is observed. Kept separate from Anthropic's reported
+    #: resets because only one of the two is a measurement.
+    #: 予測リセット時刻。利用率が最後に上昇した時刻を窓の始点とみなし、
+    #: 「始点＋窓長」をリセット時刻とみなす。利用率の上昇は新しい窓の始まりを
+    #: 意味するため、この予測値は「リセットが確実に済んでいる上限時刻」であり
+    #: 真の値ではない。最初の上昇を観測するまで None。
+    #: Anthropicの実測値と混同しないよう別フィールドにしている。
+    estimated_session_reset: float | None = None
+    estimated_weekly_reset: float | None = None
 
     def remaining_ratio(self) -> float | None:
         """Return the tightest remaining ratio across the known windows.
@@ -151,6 +164,113 @@ class OllamaSnapshot:
         if self.weekly_utilization is None:
             return None
         return 1.0 - self.weekly_utilization
+
+
+#: Ollama's session window is at most five hours and its weekly window at most
+#: seven days. If Ollama ever starts reporting true reset times, both this pair
+#: and the estimator that feeds on them go away - see .github/TODO.md.
+#: Ollamaのセッション窓は最長5時間、週次窓は最長7日。Ollamaが真のリセット時刻を
+#: 返すようになったら、このペアとそれを食う推定器は消える(.github/TODO.md 参照)。
+OLLAMA_SESSION_WINDOW_SECONDS = 5 * 3600
+OLLAMA_WEEKLY_WINDOW_SECONDS = 7 * 24 * 3600
+
+
+class OllamaResetEstimator:
+    """Bound when Ollama's windows must reset, from utilization movements alone.
+
+    A window's utilization cannot fall until the window resets, so the first
+    observed rise marks the start of a fresh window: the reading before it
+    belonged to a window that had just ended. "That rise + the window's maximum
+    length" is therefore the latest the reset could have happened, and the
+    current window cannot outlive it. This is an upper bound, not the truth -
+    the real reset may be much earlier, which is why every estimate carries a
+    tilde in the TUI.
+
+    利用率は窓がリセットされない限り下がらない。したがって最初に観測した上昇は
+    新しい窓の始点を示し、その直前の値は直前に終わった窓に属していたことになる。
+    「上昇時刻＋窓の最大長」はリセットが起こっていた可能性が確実にある最遅時刻で
+    あり、現在の窓がそれを超えて存続することはない。これは上限であり真値ではない。
+    そのためTUIではすべて波ダッシュ付きで表示する。
+    """
+
+    def __init__(self) -> None:
+        # 前回の利用率。上昇検出のために保持する。
+        # Previous readings, kept to detect a rise.
+        self._prev_session: float | None = None
+        self._prev_weekly: float | None = None
+        # 最後に立てた予測値。上昇が無い読み取りでも保持する(窓はリセットまで
+        # 有効なため、予測値も有効であり続ける)。
+        # The last bound we derived, kept across readings that show no rise:
+        # the window is still running, so its bound is still the bound.
+        self._last_session_reset: float | None = None
+        self._last_weekly_reset: float | None = None
+
+    def update(self, snapshot: OllamaSnapshot) -> OllamaSnapshot:
+        """Return ``snapshot`` with estimated reset times attached.
+
+        予測リセット時刻を付与したスナップショットを返す。
+        """
+        session_reset = self._advance(
+            prev=self._prev_session,
+            current=snapshot.session_utilization,
+            now=snapshot.observed_at,
+            window_length=OLLAMA_SESSION_WINDOW_SECONDS,
+            last_estimate=self._last_session_reset,
+        )
+        weekly_reset = self._advance(
+            prev=self._prev_weekly,
+            current=snapshot.weekly_utilization,
+            now=snapshot.observed_at,
+            window_length=OLLAMA_WEEKLY_WINDOW_SECONDS,
+            last_estimate=self._last_weekly_reset,
+        )
+        self._last_session_reset = session_reset
+        self._last_weekly_reset = weekly_reset
+        if snapshot.session_utilization is not None:
+            self._prev_session = snapshot.session_utilization
+        if snapshot.weekly_utilization is not None:
+            self._prev_weekly = snapshot.weekly_utilization
+
+        return OllamaSnapshot(
+            session_utilization=snapshot.session_utilization,
+            weekly_utilization=snapshot.weekly_utilization,
+            observed_at=snapshot.observed_at,
+            weekly_models=snapshot.weekly_models,
+            estimated_session_reset=session_reset,
+            estimated_weekly_reset=weekly_reset,
+        )
+
+    def _advance(
+        self,
+        *,
+        prev: float | None,
+        current: float | None,
+        now: float,
+        window_length: float,
+        last_estimate: float | None,
+    ) -> float | None:
+        """Update one window's tracker and return its estimated reset time.
+
+        一つの窓の状態を更新し、予測リセット時刻を返す。
+        """
+        if current is None:
+            # 欠損読み取りでも既存の予測は捨てない。窓は進み続けている。
+            # A missing reading does not invalidate an existing bound.
+            return last_estimate
+        if prev is not None and current > prev:
+            # 上昇を検出: 直前の読み値は直前に終わった窓のものだった。
+            # A rise: the previous reading belonged to a window that just ended.
+            return now + window_length
+        if last_estimate is not None and last_estimate >= now + window_length:
+            # ありえないほど古い予測は窓長を超えているため、理論上は起こらない。
+            # 念のため残す(古い上限のままだと窓が切り替わった後に誤表示する)。
+            # A bound older than one window length cannot happen; keep the
+            # guard so a stale estimate cannot outlive its own window.
+            return None
+        # 上昇が観測されるまで、窓の残り時間は未知のままなので予測もしない。
+        # Until a rise is seen, how long the window has been running is unknown,
+        # so there is nothing to estimate yet.
+        return last_estimate
 
 
 def parse_ollama_usage(payload: dict[str, Any]) -> OllamaSnapshot:

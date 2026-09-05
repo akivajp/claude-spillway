@@ -67,6 +67,22 @@ def _fmt_reset(ts: float | None) -> str:
     return f"{clock} ({t('monitor.reset.in', delta=delta)})"
 
 
+def _fmt_estimated_reset(ts: float | None) -> str:
+    """Render an estimated reset with a tilde, marking it as never a measurement.
+
+    Anthropic's resets are reported by Anthropic; Ollama's are inferred. The
+    prefix is the only honest way to show both in one table.
+
+    予測リセット時刻を波ダッシュ付きで表示する。Anthropicの値は実測、Ollamaの値は
+    推論である。同じ表に両方を出す以上、接頭辞で区別するのが誠実な表示方法。
+    """
+    if ts is None:
+        # 利用率の上昇がまだ観測されていない(= 予測の材料が無い)。
+        # No rise observed yet, so there is nothing to estimate from.
+        return "-"
+    return f"~{_fmt_reset(ts)}"
+
+
 def _build_renderable(data: dict, url: str, error: str | None) -> Group:
     mode = data.get("mode", "unknown")
     mode_label = {
@@ -158,17 +174,22 @@ def _build_renderable(data: dict, url: str, error: str | None) -> Group:
     ollama_table = Table(title=t("monitor.ollama.title"), show_lines=False)
     ollama_table.add_column(t("monitor.col.item"))
     ollama_table.add_column(t("monitor.col.value"), justify="right")
+    ollama_table.add_column(t("monitor.col.resets_at"), justify="right")
     ollama_table.add_column(t("monitor.col.observed_at"), justify="right")
-    # アカウント全体のquota。Ollamaはリセット時刻を返さないため列は設けない。
-    # Account-wide quota. Ollama reports no reset times, so there is no column for them.
+    # Ollamaはリセット時刻を返さないため、利用率の上昇から求めた「上限値」を
+    # 波ダッシュ付きで示す。確定値ではないことを明示するため。
+    # Ollama reports no reset times, so show the estimated upper bound with a
+    # tilde - the prefix marks it as an estimate, never a measurement.
     ollama_table.add_row(
         t("monitor.row.session_window"),
         _fmt_pct(_remaining(ollama.get("session_utilization"))),
+        _fmt_estimated_reset(ollama.get("estimated_session_reset")),
         _fmt_time(ollama.get("observed_at")),
     )
     ollama_table.add_row(
         t("monitor.row.weekly_window"),
         _fmt_pct(_remaining(ollama.get("weekly_utilization"))),
+        _fmt_estimated_reset(ollama.get("estimated_weekly_reset")),
         _fmt_time(ollama.get("observed_at")),
     )
     top_models = ollama.get("weekly_models") or []
@@ -177,17 +198,21 @@ def _build_renderable(data: dict, url: str, error: str | None) -> Group:
         ollama_table.add_row(t("monitor.row.top_models"), summary, "")
     # ここから下はこのプロキシが中継した分のみの自己計測値。
     # Below this point: self-measured counters covering only what this proxy relayed.
-    ollama_table.add_row(t("monitor.row.relayed"), str(ollama.get("requests_sent", 0)), "")
-    ollama_table.add_row(t("monitor.row.failed"), str(ollama.get("requests_failed", 0)), "")
+    ollama_table.add_row(t("monitor.row.relayed"), str(ollama.get("requests_sent", 0)), "", "")
+    ollama_table.add_row(t("monitor.row.failed"), str(ollama.get("requests_failed", 0)), "", "")
     failures = ollama.get("consecutive_failures") or 0
     if failures:
-        ollama_table.add_row(t("monitor.row.consecutive_failures"), f"[red]{failures}[/red]", "")
-    ollama_table.add_row(t("monitor.row.last_status"), str(ollama.get("last_status_code") or "-"), "")
+        ollama_table.add_row(
+            t("monitor.row.consecutive_failures"), f"[red]{failures}[/red]", "", ""
+        )
     ollama_table.add_row(
-        t("monitor.row.last_request_at"), _fmt_time(ollama.get("last_request_at")), ""
+        t("monitor.row.last_status"), str(ollama.get("last_status_code") or "-"), "", ""
+    )
+    ollama_table.add_row(
+        t("monitor.row.last_request_at"), _fmt_time(ollama.get("last_request_at")), "", ""
     )
     if ollama.get("last_error"):
-        ollama_table.add_row(t("monitor.row.last_error"), f"[red]{ollama['last_error']}[/red]", "")
+        ollama_table.add_row(t("monitor.row.last_error"), f"[red]{ollama['last_error']}[/red]", "", "")
 
     footer = Panel(
         t(

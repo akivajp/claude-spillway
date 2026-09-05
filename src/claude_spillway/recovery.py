@@ -23,6 +23,7 @@ from .backends import ProxyBackends
 from .config import Settings
 from .quota import (
     BackendMode,
+    OllamaResetEstimator,
     QuotaSnapshot,
     QuotaTracker,
     parse_ollama_usage,
@@ -59,6 +60,9 @@ class RecoveryProbe:
         # 同上、Ollama側の使用量エンドポイントについて。
         # The same, for Ollama's usage endpoint.
         self._ollama_usage_unavailable = False
+        # Ollamaはリセット時刻を返さないため、利用率の上昇から上限値を推定する。
+        # Ollama reports no reset times, so bound them from utilization rises.
+        self._ollama_reset_estimator = OllamaResetEstimator()
 
     def capture_auth_headers(self, headers: dict[str, str]) -> None:
         """Stash the auth headers seen while relaying normally (for probing).
@@ -165,6 +169,11 @@ class RecoveryProbe:
             return
         if snapshot.remaining_ratio() is None:
             return
+        # リセット時刻を返さないOllamaのために、利用率の動きから上限値を推定する。
+        # 表示専用であり、ルーティング判断は実測値のみで行われる。
+        # Ollama reports no reset times, so bound them from utilization movement.
+        # Display-only: routing decisions still run on the measured values alone.
+        snapshot = self._ollama_reset_estimator.update(snapshot)
         self._tracker.observe_ollama(snapshot)
 
     async def _read_usage_endpoint(self) -> QuotaSnapshot | None:
