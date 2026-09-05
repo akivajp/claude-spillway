@@ -65,6 +65,7 @@ systemctl --user restart claude-spillway     # 再起動
 systemctl --user stop claude-spillway        # 停止
 journalctl --user -u claude-spillway -f      # ログ追跡
 claude-spillway monitor                      # TUIで残量を監視
+claude-spillway dashboard                    # ブラウザで残量を監視
 ```
 
 ## 更新

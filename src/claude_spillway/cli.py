@@ -49,6 +49,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     monitor.add_argument("--port", type=int, default=8787, help=t("cli.monitor.port"))
     monitor.add_argument("--interval", type=float, default=1.0, help=t("cli.monitor.interval"))
 
+    dashboard = subparsers.add_parser("dashboard", help=t("cli.dashboard.help"))
+    dashboard.add_argument("--host", type=str, default="127.0.0.1", help=t("cli.dashboard.host"))
+    dashboard.add_argument("--port", type=int, default=8787, help=t("cli.dashboard.port"))
+    dashboard.add_argument("--no-open", action="store_true", help=t("cli.dashboard.no_open"))
+
     return parser
 
 
@@ -110,6 +115,9 @@ def _run_serve(args: argparse.Namespace) -> None:
     console.rule("[bold cyan]claude-spillway[/bold cyan]")
     console.print(f"config         : {config_display}")
     console.print(f"listen         : {settings.listen.host}:{settings.listen.port}")
+    console.print(
+        f"dashboard      : http://{settings.listen.host}:{settings.listen.port}/_spillway/"
+    )
     console.print(f"anthropic      : {settings.anthropic.base_url}")
     console.print(f"ollama         : {settings.ollama.base_url}")
     console.print(
@@ -131,6 +139,35 @@ def _run_monitor(args: argparse.Namespace) -> None:
     run_monitor(host=args.host, port=args.port, interval=args.interval)
 
 
+def _run_dashboard(args: argparse.Namespace) -> None:
+    """Print the dashboard URL and, unless asked not to, open it in a browser.
+
+    The URL is always printed first: on WSL and on headless boxes there may be
+    no browser to open, and the user still needs the address.
+
+    ダッシュボードのURLを表示し、指定が無ければブラウザで開く。
+    URLを先に必ず表示するのは、WSLやGUIの無い環境では開けないことがあり、
+    その場合でもアドレス自体は必要になるため。
+    """
+    import webbrowser
+
+    url = f"http://{args.host}:{args.port}/_spillway/"
+    console.print(url)
+    if args.no_open:
+        return
+    try:
+        opened = webbrowser.open(url)
+    except (webbrowser.Error, OSError):
+        # ブラウザが1つも無い環境では webbrowser.Error、開く側のプロセス起動に
+        # 失敗すると OSError。URLは既に出しているのでここで落とす理由はない。
+        # webbrowser.Error when no browser exists at all, OSError when spawning
+        # one fails. The URL is already printed, so nothing here is worth
+        # failing over.
+        opened = False
+    if not opened:
+        console.print(f"[yellow]{t('cli.dashboard.open_failed')}[/yellow]")
+
+
 def main() -> None:
     parser = _build_arg_parser()
     args = parser.parse_args()
@@ -139,6 +176,8 @@ def main() -> None:
         _run_serve(args)
     elif args.command == "monitor":
         _run_monitor(args)
+    elif args.command == "dashboard":
+        _run_dashboard(args)
 
 
 if __name__ == "__main__":

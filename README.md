@@ -193,6 +193,19 @@ uv sync
    its own and stays live even while you are idle, because reading the usage
    endpoint costs no quota.
 
+5. (Optional) Or watch the same thing in a browser:
+
+   ```bash
+   claude-spillway dashboard          # opens http://127.0.0.1:8787/_spillway/
+   ```
+
+   The page is served by the proxy itself and needs no separate process. It
+   shows both backends side by side with their remaining quota, reset
+   countdowns and the thresholds it switches on, and refreshes on its own. It
+   turns red the moment the proxy stops answering, which is worth knowing
+   quickly: while `ANTHROPIC_BASE_URL` points here, Claude Code cannot reach
+   Anthropic either.
+
 You can try the whole flow without any real credentials using the bundled
 fake upstream servers — see
 [`scripts/manual_smoketest/`](https://github.com/akivajp/claude-spillway/tree/main/scripts/manual_smoketest).

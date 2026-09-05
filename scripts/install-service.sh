@@ -126,6 +126,7 @@ verify() {
             printf '  1. Claude Code にプロキシを教える (~/.claude/settings.json):\n'
             printf '     {"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:%s"}}\n' "$port"
             printf '  2. 状態を見る / watch it:  claude-spillway monitor\n'
+            printf '     ブラウザなら / in a browser: http://127.0.0.1:%s/_spillway/\n' "$port"
             printf '  3. ログを見る / logs:      journalctl --user -u claude-spillway -f\n'
             return 0
         fi

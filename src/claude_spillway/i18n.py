@@ -117,6 +117,26 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "ja": "warning: ollama.api_key が未設定です。フェイルオーバー時のリクエストは失敗します。",
     },
     # --- monitor TUI -------------------------------------------------------
+    "cli.dashboard.help": {
+        "en": "Open the browser dashboard of a running proxy",
+        "ja": "稼働中プロキシのブラウザ用ダッシュボードを開く",
+    },
+    "cli.dashboard.host": {
+        "en": "Host of the running proxy",
+        "ja": "稼働中プロキシのホスト",
+    },
+    "cli.dashboard.port": {
+        "en": "Port of the running proxy",
+        "ja": "稼働中プロキシのポート",
+    },
+    "cli.dashboard.no_open": {
+        "en": "Only print the URL; do not open a browser",
+        "ja": "URLを表示するだけでブラウザを開かない",
+    },
+    "cli.dashboard.open_failed": {
+        "en": "Could not open a browser; open the URL above yourself.",
+        "ja": "ブラウザを開けませんでした。上のURLを手動で開いてください。",
+    },
     "monitor.error.title": {
         "en": "Connection error",
         "ja": "接続エラー",
@@ -203,6 +223,46 @@ _MESSAGES: dict[str, dict[str, str]] = {
             "recovery: switch back at {recovery}% remaining or above"
         ),
         "ja": ("fallback閾値: 残り{fallback}% 未満で切替 / recovery閾値: 残り{recovery}%以上で復帰"),
+    },
+    # --- Browser dashboard / ブラウザ用ダッシュボード -----------------------
+    # Only strings the TUI has no equivalent for live here; everything the two
+    # views share is reused from the monitor.* keys above, so the two never
+    # drift apart in wording.
+    # TUIに対応する語のないものだけをここに置く。両方の画面で共通する語は
+    # 上の monitor.* を再利用し、文言が二重管理で食い違わないようにする。
+    "dashboard.badge.anthropic": {"en": "ANTHROPIC", "ja": "ANTHROPIC"},
+    "dashboard.badge.fallback": {"en": "OLLAMA (fallback)", "ja": "OLLAMA (フォールバック中)"},
+    "dashboard.badge.offline": {"en": "UNREACHABLE", "ja": "接続不能"},
+    "dashboard.refresh": {"en": "refresh", "ja": "更新間隔"},
+    "dashboard.paused": {"en": "paused", "ja": "停止"},
+    "dashboard.unreachable": {
+        "en": "Cannot reach the proxy ({error}). Claude Code cannot reach it either while this lasts.",
+        "ja": "プロキシに接続できません ({error})。この状態ではClaude Codeからも接続できません。",
+    },
+    "dashboard.failed_suffix": {"en": "failed", "ja": "失敗"},
+    "dashboard.policy": {"en": "policy: {policy}", "ja": "ポリシー: {policy}"},
+    "dashboard.uptime": {"en": "uptime: {h}h{m}m", "ja": "稼働時間: {h}時間{m}分"},
+    "dashboard.mark.fallback": {
+        "en": "fallback threshold: switches to Ollama below this",
+        "ja": "fallback閾値: ここを下回るとOllamaへ切り替わる",
+    },
+    "dashboard.mark.recovery": {
+        "en": "recovery threshold: switches back to Anthropic at or above this",
+        "ja": "recovery閾値: ここまで回復するとAnthropicへ戻る",
+    },
+    "dashboard.ollama.sub": {
+        "en": "account-wide usage, read from Ollama's usage endpoint",
+        "ja": "Ollamaの使用量エンドポイントから読んだアカウント全体の使用状況",
+    },
+    "dashboard.ollama.estimate_note": {
+        "en": (
+            "Ollama reports no reset times. The ~ values are upper bounds inferred "
+            "from when utilization was seen to rise, so the real reset may be earlier."
+        ),
+        "ja": (
+            "Ollamaはリセット時刻を返しません。~ 付きの値は利用率の上昇から推定した"
+            "上限であり、実際のリセットはこれより早い可能性があります。"
+        ),
     },
 }
 

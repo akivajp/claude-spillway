@@ -10,12 +10,14 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from importlib import resources
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from .backends import ProxyBackends, to_streaming_response
 from .config import Settings
+from .i18n import get_language, t
 from .quota import BackendMode, QuotaTracker, RoutingPolicy
 from .recovery import RecoveryProbe
 
@@ -31,6 +33,79 @@ logger = logging.getLogger("claude_spillway.proxy")
 _FAILOVER_PATH = "v1/messages"
 
 _STARTED_AT = time.time()
+
+#: Labels the dashboard needs, mapped onto the keys its JavaScript reads.
+#: Most are shared with the TUI so the two views cannot drift in wording.
+#:
+#: ダッシュボードが必要とする文言と、JavaScript側のキーの対応表。
+#: 大半はTUIと共通のキーを指しており、二つの画面で文言がずれないようにしている。
+_DASHBOARD_LABELS: dict[str, str] = {
+    "badge_anthropic": "dashboard.badge.anthropic",
+    "badge_fallback": "dashboard.badge.fallback",
+    "badge_offline": "dashboard.badge.offline",
+    "refresh": "dashboard.refresh",
+    "paused": "dashboard.paused",
+    "unreachable": "dashboard.unreachable",
+    "failed_suffix": "dashboard.failed_suffix",
+    "policy": "dashboard.policy",
+    "uptime": "dashboard.uptime",
+    "mark_fallback": "dashboard.mark.fallback",
+    "mark_recovery": "dashboard.mark.recovery",
+    "ollama_sub": "dashboard.ollama.sub",
+    "estimate_note": "dashboard.ollama.estimate_note",
+    "waiting": "monitor.waiting.body",
+    "thresholds": "monitor.footer.thresholds",
+    "reset_in": "monitor.reset.in",
+    "window_5h": "monitor.row.window_5h",
+    "window_7d": "monitor.row.window_7d",
+    "session_window": "monitor.row.session_window",
+    "weekly_window": "monitor.row.weekly_window",
+    "requests": "monitor.row.requests",
+    "tokens": "monitor.row.tokens",
+    "observed_at": "monitor.col.observed_at",
+    "top_models": "monitor.row.top_models",
+    "relayed": "monitor.row.relayed",
+    "consecutive_failures": "monitor.row.consecutive_failures",
+    "last_status": "monitor.row.last_status",
+    "last_error": "monitor.row.last_error",
+    "source_headers": "monitor.source.headers",
+    "source_usage_api": "monitor.source.usage_api",
+}
+
+#: Rendered pages keyed by language. The page is static once built, and it is
+#: served on every browser refresh, so building it once is worth the dict.
+#: 言語ごとの描画済みページ。組み立て後は不変で、ブラウザの更新のたびに
+#: 返すものなので、一度だけ組み立てて使い回す。
+_dashboard_cache: dict[str, str] = {}
+
+
+def render_dashboard() -> str:
+    """Return the dashboard page with the current language's labels baked in.
+
+    Placeholders are substituted rather than templated so that the ``.html``
+    file stays valid, editable HTML on its own.
+
+    現在の言語の文言を埋め込んだダッシュボードのHTMLを返す。
+    テンプレートエンジンを使わずプレースホルダ置換にしているのは、``.html``
+    ファイル単体でも正しいHTMLとして編集・確認できるようにするため。
+    """
+    language = get_language()
+    cached = _dashboard_cache.get(language)
+    if cached is not None:
+        return cached
+
+    # ``{...}`` を含むCSS/JSと衝突しないよう、str.format ではなく置換を使う。
+    # Plain replacement, not str.format: the CSS and JS are full of braces.
+    source = resources.files(__package__).joinpath("dashboard.html").read_text(encoding="utf-8")
+    labels = {name: t(key) for name, key in _DASHBOARD_LABELS.items()}
+    page = source.replace("__CS_LANG__", language).replace(
+        # ``</script>`` がラベル中に現れてもHTMLを壊さないよう、``/`` を退避する。
+        # Escape ``/`` so a label containing ``</script>`` cannot break out.
+        "__CS_LABELS__",
+        json.dumps(labels, ensure_ascii=False).replace("</", "<\\/"),
+    )
+    _dashboard_cache[language] = page
+    return page
 
 
 def _resolve_policy(name: str) -> RoutingPolicy:
@@ -162,6 +237,24 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
                 },
             }
         )
+
+    # ``/_spillway`` と ``/_spillway/`` の両方を明示的に登録する。末尾スラッシュの
+    # 自動リダイレクトは「どのルートにも一致しなかった場合」にしか働かず、ここでは
+    # 下の総当たりルートが先に拾ってAnthropicへ中継されてしまうため。
+    # Both spellings are registered explicitly: FastAPI's trailing-slash redirect
+    # only fires when nothing matched, and here the catch-all below would match
+    # first and relay the request to Anthropic.
+    @app.get("/_spillway", include_in_schema=False)
+    @app.get("/_spillway/", include_in_schema=False)
+    async def dashboard() -> HTMLResponse:
+        """Serve the browser dashboard that renders the status endpoint.
+
+        ステータスAPIを可視化するブラウザ用ダッシュボードを返す。
+        """
+        # 更新のたびに取り直させる。バージョンアップ後に古いページが残ると、
+        # 表示だけ古いという分かりにくい状態になるため。
+        # Always refetch: a stale page after an upgrade is a confusing failure.
+        return HTMLResponse(render_dashboard(), headers={"Cache-Control": "no-store"})
 
     @app.api_route(
         "/{full_path:path}",

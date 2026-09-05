@@ -76,6 +76,7 @@ systemctl --user restart claude-spillway     # restart
 systemctl --user stop claude-spillway        # stop
 journalctl --user -u claude-spillway -f      # follow the logs
 claude-spillway monitor                      # watch quota in a TUI
+claude-spillway dashboard                    # watch quota in a browser
 ```
 
 ## Upgrading

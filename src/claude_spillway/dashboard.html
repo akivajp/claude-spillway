@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="__CS_LANG__">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claude-spillway</title>
+<!--
+  ブラウザが /favicon.ico を取りに行くと、そのリクエストは総当たりの
+  プロキシ経路に入りAnthropicへ中継されてしまう。データURIで自前に閉じる。
+  Without this the browser requests /favicon.ico, which the catch-all route
+  would relay to Anthropic. A data URI keeps it local.
+-->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='14'>&#128167;</text></svg>">
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7f9;
+  --card: #ffffff;
+  --fg: #1b1f24;
+  --muted: #6a737d;
+  --line: #e3e6ea;
+  --good: #1a9c52;
+  --warn: #c98a00;
+  --bad: #d13438;
+  --accent: #3b7dd8;
+  --track: #e8ebef;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171a;
+    --card: #1c2024;
+    --fg: #e6e9ec;
+    --muted: #97a0aa;
+    --line: #2b3138;
+    --good: #3fbf72;
+    --warn: #e0a53a;
+    --bad: #f0605f;
+    --accent: #6ba4f0;
+    --track: #2a3037;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 1.25rem;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", Meiryo, sans-serif;
+}
+.wrap { max-width: 1000px; margin: 0 auto; }
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .75rem;
+  margin-bottom: 1rem;
+}
+h1 { font-size: 1.05rem; margin: 0; font-weight: 650; letter-spacing: .01em; }
+.badge {
+  padding: .2rem .6rem;
+  border-radius: 999px;
+  font-weight: 650;
+  font-size: .8rem;
+  letter-spacing: .02em;
+  border: 1px solid transparent;
+}
+.badge.anthropic { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); border-color: color-mix(in srgb, var(--good) 35%, transparent); }
+.badge.fallback  { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+.badge.offline   { background: color-mix(in srgb, var(--bad) 15%, transparent);  color: var(--bad);  border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+.spacer { flex: 1 1 auto; }
+select {
+  background: var(--card);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: .25rem .4rem;
+  font: inherit;
+}
+
+/* align-items:start で、内容の少ないカードが相手に合わせて間延びしないようにする。
+   align-items:start keeps a short card from being stretched to match a tall one. */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  align-items: start;
+  gap: 1rem;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1rem 1.1rem 1.1rem;
+}
+.card h2 {
+  font-size: .95rem;
+  margin: 0 0 .15rem;
+  font-weight: 650;
+}
+.card .sub { color: var(--muted); font-size: .78rem; margin-bottom: .9rem; }
+
+/* --- 残量バー / remaining-quota bars --- */
+.metric { margin-bottom: .9rem; }
+.metric:last-child { margin-bottom: 0; }
+.metric .row {
+  display: flex;
+  align-items: baseline;
+  gap: .5rem;
+  margin-bottom: .3rem;
+}
+.metric .name { font-weight: 550; }
+.metric .pct { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 650; }
+.metric .reset { color: var(--muted); font-size: .78rem; font-variant-numeric: tabular-nums; }
+.bar {
+  position: relative;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--track);
+  overflow: hidden;
+}
+.bar > .fill {
+  height: 100%;
+  border-radius: 999px;
+  /* 残量の変化をなぞる程度の控えめな遷移。数値が飛ぶ印象を避ける。
+     A restrained transition so a changed reading reads as movement. */
+  transition: width .4s ease, background-color .4s ease;
+}
+.bar.marked { overflow: visible; }
+.bar > .mark {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 15px;
+  border-radius: 1px;
+  opacity: .75;
+}
+.good { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+.fill.good { background: var(--good); } .fill.warn { background: var(--warn); } .fill.bad { background: var(--bad); }
+/* 未観測の項目は空のトラックだけを見せる。灰色でも満タンに描くと
+   「残量100%」に読めてしまうため。
+   An unobserved metric shows an empty track: a full grey bar would read
+   as "100% remaining". */
+.fill.none { background: var(--muted); width: 0 !important; }
+
+/* --- 補足情報の表 / supporting detail table --- */
+table.kv { width: 100%; border-collapse: collapse; margin-top: .9rem; font-size: .82rem; }
+table.kv th, table.kv td { text-align: left; padding: .25rem 0; vertical-align: top; }
+table.kv th { color: var(--muted); font-weight: 450; white-space: nowrap; padding-right: .8rem; }
+table.kv td { font-variant-numeric: tabular-nums; word-break: break-word; }
+table.kv tr.hide { display: none; }
+
+.note { margin-top: .8rem; color: var(--muted); font-size: .76rem; }
+footer { margin-top: 1rem; color: var(--muted); font-size: .78rem; }
+footer code { font-size: .95em; }
+.banner {
+  border-radius: 10px;
+  padding: .8rem 1rem;
+  margin-bottom: 1rem;
+  border: 1px solid;
+  display: none;
+}
+.banner.show { display: block; }
+.banner.error { background: color-mix(in srgb, var(--bad) 10%, transparent); border-color: color-mix(in srgb, var(--bad) 35%, transparent); color: var(--bad); }
+.banner.info  { background: color-mix(in srgb, var(--accent) 10%, transparent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); color: var(--fg); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>claude-spillway</h1>
+    <span class="badge" id="badge">…</span>
+    <span class="sub" id="reason" style="color:var(--muted);font-size:.8rem"></span>
+    <span class="spacer"></span>
+    <label style="color:var(--muted);font-size:.8rem" for="interval" id="l-refresh"></label>
+    <select id="interval">
+      <option value="2">2s</option>
+      <option value="5" selected>5s</option>
+      <option value="15">15s</option>
+      <option value="60">60s</option>
+      <option value="0" id="o-paused"></option>
+    </select>
+  </header>
+
+  <div class="banner" id="banner"></div>
+
+  <!--
+    最初の取得に成功するまで隠しておく。値の無いラベルだけが並ぶ表は、
+    情報が無いことよりも「壊れている」ことを伝えてしまうため。
+    Hidden until the first successful poll: a table of labels with no
+    values reads as broken rather than as empty.
+  -->
+  <div class="grid" id="grid" hidden>
+    <section class="card">
+      <h2>Anthropic</h2>
+      <div class="sub" id="a-source">&nbsp;</div>
+      <div id="a-metrics"></div>
+      <table class="kv">
+        <tr id="a-req-row"><th id="l-requests"></th><td id="a-requests"></td></tr>
+        <tr id="a-tok-row"><th id="l-tokens"></th><td id="a-tokens"></td></tr>
+        <tr><th id="l-observed"></th><td id="a-observed"></td></tr>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Ollama Cloud</h2>
+      <div class="sub" id="o-sub"></div>
+      <div id="o-metrics"></div>
+      <table class="kv">
+        <tr id="o-models-row"><th id="l-top-models"></th><td id="o-models"></td></tr>
+        <tr><th id="l-relayed"></th><td id="o-relayed"></td></tr>
+        <tr id="o-fail-row"><th id="l-consecutive"></th><td id="o-consecutive" class="bad"></td></tr>
+        <tr><th id="l-last-status"></th><td id="o-status"></td></tr>
+        <tr><th id="l-observed2"></th><td id="o-observed"></td></tr>
+        <tr id="o-error-row"><th id="l-last-error"></th><td id="o-error" class="bad"></td></tr>
+      </table>
+      <div class="note" id="o-estimate-note"></div>
+    </section>
+  </div>
+
+  <footer id="footer" hidden>
+    <span id="f-thresholds"></span> ·
+    <span id="f-policy"></span> ·
+    <span id="f-uptime"></span>
+  </footer>
+</div>
+
+<script>
+// サーバー側のメッセージカタログから注入される文言。TUIと同じ語彙を使うため、
+// ここでは翻訳を持たない。
+// Labels injected from the server-side catalog, so this page shares the TUI's
+// vocabulary instead of carrying a second set of translations.
+const L = __CS_LABELS__;
+// 絶対パスで参照する。/_spillway と /_spillway/ ではベースURLが変わるため、
+// 相対パスだと片方で解決先がずれる。
+// An absolute path: /_spillway and /_spillway/ have different base URLs,
+// so a relative one would resolve wrongly on one of them.
+const STATUS_URL = "/_spillway/status";
+
+/** 最後に受け取ったペイロード。カウントダウンの再描画に使う。
+ *  The last payload received; the per-second countdown redraws from it. */
+let latest = null;
+let timer = null;
+
+// --- 整形ヘルパー / formatting helpers ------------------------------------
+
+/** 使用率(0〜1)を残量に反転する。ステータスAPIは使用率で返すため。
+ *  Invert utilization into remaining: the status endpoint reports the former. */
+function remaining(utilization) {
+  return (utilization === null || utilization === undefined) ? null : 1 - utilization;
+}
+
+/** 残量に応じた深刻度。TUIの閾値(30% / 10%)と揃えている。
+ *  Severity by remaining ratio, matching the TUI's 30% / 10% steps. */
+function severity(ratio) {
+  if (ratio === null) return "none";
+  if (ratio >= 0.3) return "good";
+  if (ratio >= 0.1) return "warn";
+  return "bad";
+}
+
+function fmtPct(ratio) {
+  return ratio === null ? "–" : (ratio * 100).toFixed(1) + "%";
+}
+
+function fmtClock(epochSeconds) {
+  if (!epochSeconds) return "–";
+  return new Date(epochSeconds * 1000).toLocaleTimeString();
+}
+
+/** 残り時間を "1h05m" / "12m" の形にする。過ぎていれば空文字。
+ *  Render a countdown as "1h05m" / "12m"; empty once the moment has passed. */
+function fmtDelta(epochSeconds) {
+  const left = Math.floor(epochSeconds - Date.now() / 1000);
+  if (left <= 0) return "";
+  const minutes = Math.floor(left / 60);
+  const h = Math.floor(minutes / 60), m = minutes % 60;
+  return h ? `${h}h${String(m).padStart(2, "0")}m` : `${m}m`;
+}
+
+/** リセット時刻を「時刻 (あとN)」で表す。estimated の場合は ~ を前置し、
+ *  実測ではないことを表示上でも区別する(Ollamaは推定値しか出せない)。
+ *  Render a reset as "clock (in N)". An estimate is prefixed with ~ so it is
+ *  never mistaken for a measurement - Ollama only ever yields an estimate. */
+function fmtReset(epochSeconds, estimated) {
+  if (!epochSeconds) return "";
+  const delta = fmtDelta(epochSeconds);
+  const body = delta ? `${fmtClock(epochSeconds)} (${L.reset_in.replace("{delta}", delta)})` : fmtClock(epochSeconds);
+  return (estimated ? "~" : "") + body;
+}
+
+// --- 描画 / rendering -----------------------------------------------------
+
+/** 残量バー1本ぶんのDOMを作る。marks はバー上に立てる閾値の目盛り(0〜1)。
+ *  Build one remaining-quota bar. `marks` are threshold ticks (0..1). */
+function metric(name, ratio, resetAt, estimated, marks) {
+  const el = document.createElement("div");
+  el.className = "metric";
+  const sev = severity(ratio);
+  const width = ratio === null ? 100 : Math.max(0, Math.min(1, ratio)) * 100;
+
+  const row = document.createElement("div");
+  row.className = "row";
+  const nameEl = document.createElement("span");
+  nameEl.className = "name";
+  nameEl.textContent = name;
+  const resetEl = document.createElement("span");
+  resetEl.className = "reset";
+  if (resetAt) {
+    // 1秒ごとの再描画で使うため、時刻そのものを属性に持たせておく。
+    // Keep the raw timestamp so the per-second tick can refresh it in place.
+    resetEl.dataset.reset = String(resetAt);
+    resetEl.dataset.estimated = estimated ? "1" : "";
+    resetEl.textContent = fmtReset(resetAt, estimated);
+  }
+  const pctEl = document.createElement("span");
+  pctEl.className = "pct " + sev;
+  pctEl.textContent = fmtPct(ratio);
+  row.append(nameEl, resetEl, pctEl);
+
+  const bar = document.createElement("div");
+  bar.className = "bar" + (marks && marks.length ? " marked" : "");
+  const fill = document.createElement("div");
+  fill.className = "fill " + sev;
+  fill.style.width = width + "%";
+  bar.append(fill);
+  for (const mark of marks || []) {
+    // 目盛りは「この線を割るとフェイルオーバーする」位置を示す。
+    // A tick marks the point at which the proxy switches backends.
+    const tick = document.createElement("div");
+    tick.className = "mark";
+    tick.style.left = `calc(${Math.max(0, Math.min(1, mark.at)) * 100}% - 1px)`;
+    tick.style.background = mark.color;
+    tick.title = mark.title;
+    bar.append(tick);
+  }
+
+  el.append(row, bar);
+  return el;
+}
+
+function setText(id, text) { document.getElementById(id).textContent = text; }
+function setRow(id, visible) { document.getElementById(id).classList.toggle("hide", !visible); }
+
+function render(data) {
+  latest = data;
+  const a = data.anthropic || {};
+  const o = data.ollama || {};
+  const th = data.thresholds || {};
+
+  const badge = document.getElementById("badge");
+  badge.textContent = data.mode === "fallback" ? L.badge_fallback : L.badge_anthropic;
+  badge.className = "badge " + (data.mode === "fallback" ? "fallback" : "anthropic");
+  setText("reason", data.reason ? `(${data.reason})` : "");
+
+  // 一度もリクエストが通っていない間は数値が出せない。理由を明示する。
+  // Nothing to show until a real request has passed through; say why.
+  const waiting = a.observed_at === null && !o.observed_at && !o.last_request_at;
+  showBanner(waiting ? "info" : null, L.waiting);
+
+  // --- Anthropic ---
+  const fallbackAt = (th.fallback_pct ?? 0) / 100;
+  const recoveryAt = (th.recovery_pct ?? 0) / 100;
+  const marks = [
+    { at: fallbackAt, color: "var(--bad)", title: L.mark_fallback },
+    { at: recoveryAt, color: "var(--accent)", title: L.mark_recovery },
+  ];
+  const am = document.getElementById("a-metrics");
+  am.replaceChildren(
+    metric(L.window_5h, remaining(a.utilization_5h), a.reset_5h, false, marks),
+    metric(L.window_7d, remaining(a.utilization_7d), a.reset_7d, false, marks),
+  );
+  setText("a-source", a.source ? L["source_" + a.source] || a.source : " ");
+  setRow("a-req-row", a.requests_remaining_ratio !== null && a.requests_remaining_ratio !== undefined);
+  setText("a-requests", fmtPct(a.requests_remaining_ratio ?? null));
+  setRow("a-tok-row", a.tokens_remaining_ratio !== null && a.tokens_remaining_ratio !== undefined);
+  setText("a-tokens", fmtPct(a.tokens_remaining_ratio ?? null));
+  setText("a-observed", fmtClock(a.observed_at));
+
+  // --- Ollama ---
+  const om = document.getElementById("o-metrics");
+  om.replaceChildren(
+    metric(L.session_window, remaining(o.session_utilization), o.estimated_session_reset, true, null),
+    metric(L.weekly_window, remaining(o.weekly_utilization), o.estimated_weekly_reset, true, null),
+  );
+  const models = o.weekly_models || [];
+  setRow("o-models-row", models.length > 0);
+  setText("o-models", models.slice(0, 3).map(m => `${m.name} (${m.request_count})`).join(", "));
+  setText("o-relayed", `${o.requests_sent ?? 0} / ${o.requests_failed ?? 0} ${L.failed_suffix}`);
+  setRow("o-fail-row", (o.consecutive_failures ?? 0) > 0);
+  setText("o-consecutive", String(o.consecutive_failures ?? 0));
+  setText("o-status", o.last_status_code ?? "–");
+  setText("o-observed", fmtClock(o.observed_at));
+  setRow("o-error-row", Boolean(o.last_error));
+  setText("o-error", o.last_error || "");
+
+  // --- footer ---
+  setText("f-thresholds", L.thresholds.replace("{fallback}", th.fallback_pct ?? "?").replace("{recovery}", th.recovery_pct ?? "?"));
+  setText("f-policy", L.policy.replace("{policy}", data.policy ?? "?"));
+  const up = Math.floor((data.uptime_seconds ?? 0) / 60);
+  setText("f-uptime", L.uptime.replace("{h}", Math.floor(up / 60)).replace("{m}", up % 60));
+
+  document.getElementById("grid").hidden = false;
+  document.getElementById("footer").hidden = false;
+}
+
+function showBanner(kind, text) {
+  const el = document.getElementById("banner");
+  if (!kind) { el.className = "banner"; return; }
+  el.className = "banner show " + kind;
+  el.textContent = text;
+}
+
+// --- ポーリング / polling -------------------------------------------------
+
+async function poll() {
+  try {
+    const resp = await fetch(STATUS_URL, { cache: "no-store" });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    render(await resp.json());
+  } catch (err) {
+    // プロキシが落ちているとClaude Code全体が止まるため、接続不能は
+    // 単なる表示エラーではなく最重要の通知として扱う。
+    // A down proxy takes all of Claude Code with it, so a failed poll is the
+    // headline, not a footnote.
+    const badge = document.getElementById("badge");
+    badge.textContent = L.badge_offline;
+    badge.className = "badge offline";
+    showBanner("error", L.unreachable.replace("{error}", err.message));
+  }
+}
+
+/** 1秒ごとにカウントダウンだけを進める。ポーリング間隔とは切り離すことで、
+ *  表示の鮮度を保ちつつ通信回数を増やさない。
+ *  Tick the countdowns every second, decoupled from polling: the display stays
+ *  fresh without multiplying requests. */
+function tickCountdowns() {
+  for (const el of document.querySelectorAll("[data-reset]")) {
+    el.textContent = fmtReset(Number(el.dataset.reset), el.dataset.estimated === "1");
+  }
+}
+
+function applyInterval() {
+  const seconds = Number(document.getElementById("interval").value);
+  if (timer) clearInterval(timer);
+  timer = seconds > 0 ? setInterval(poll, seconds * 1000) : null;
+  try { localStorage.setItem("cs.interval", String(seconds)); } catch (_) { /* プライベートモード等 */ }
+}
+
+function init() {
+  // 固定文言の流し込み(HTML側に二言語を書かないための対応)。
+  // Fill the static labels, so the markup carries no language of its own.
+  const statics = {
+    "l-refresh": L.refresh, "o-paused": L.paused,
+    "l-requests": L.requests, "l-tokens": L.tokens,
+    "l-observed": L.observed_at, "l-observed2": L.observed_at,
+    "l-top-models": L.top_models, "l-relayed": L.relayed,
+    "l-consecutive": L.consecutive_failures, "l-last-status": L.last_status,
+    "l-last-error": L.last_error, "o-sub": L.ollama_sub,
+    "o-estimate-note": L.estimate_note,
+  };
+  for (const [id, text] of Object.entries(statics)) setText(id, text);
+
+  const select = document.getElementById("interval");
+  try {
+    const saved = localStorage.getItem("cs.interval");
+    if (saved !== null && [...select.options].some(o => o.value === saved)) select.value = saved;
+  } catch (_) { /* ignore */ }
+  select.addEventListener("change", applyInterval);
+
+  poll();
+  applyInterval();
+  setInterval(tickCountdowns, 1000);
+
+  // タブが背面にある間のポーリングは無駄なので、戻ってきた時に取り直す。
+  // Polling a hidden tab buys nothing; refetch when it comes back instead.
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+}
+
+init();
+</script>
+</body>
+</html>
