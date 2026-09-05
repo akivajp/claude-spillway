@@ -55,6 +55,60 @@ def test_parse_quota_headers_requests_tokens() -> None:
     assert snapshot.remaining_ratio() == pytest.approx(0.05)
 
 
+def test_short_term_buckets_do_not_count_as_spent_quota() -> None:
+    """A drained per-minute bucket must not read as an exhausted subscription.
+
+    ``anthropic-ratelimit-{requests,tokens}-remaining`` refill continuously, so
+    a low reading means "wait a moment", not "the quota is gone". Counting them
+    as quota moved traffic off a backend with 87% of its window left, and into
+    an Ollama that was itself out - the whole failover was spurious.
+
+    毎分補充されるバケツの枯渇を、サブスクリプション枠の枯渇と読み違えないこと。
+    ``anthropic-ratelimit-{requests,tokens}-remaining`` は継続的に補充されるため、
+    値が小さいのは「少し待て」であって「枠が尽きた」ではない。これをquotaとして
+    数えた結果、窓が87%残っているのにトラフィックを、しかも自身も枯渇している
+    Ollamaへ逃がしていた。フェイルオーバーそのものが誤りだった。
+    """
+    headers = httpx.Headers(
+        {
+            "anthropic-ratelimit-unified-5h-utilization": "0.13",
+            "anthropic-ratelimit-unified-7d-utilization": "0.01",
+            "anthropic-ratelimit-requests-limit": "1000",
+            "anthropic-ratelimit-requests-remaining": "420",
+            "anthropic-ratelimit-tokens-limit": "200000",
+            "anthropic-ratelimit-tokens-remaining": "12000",
+        }
+    )
+    snapshot = parse_quota_headers(headers)
+    # 表示用の値としては今までどおり読める。
+    # Still read for display, as before.
+    assert snapshot.tokens_remaining_ratio == pytest.approx(0.06)
+    # 判定に使う残量は窓のみを見る(7d残99% と 5h残87% の小さい方)。
+    # The ratio used for routing looks at the windows alone.
+    assert snapshot.remaining_ratio() == pytest.approx(0.87)
+
+    tracker = QuotaTracker(fallback_threshold_pct=10.0, recovery_threshold_pct=20.0)
+    assert tracker.observe(snapshot) is BackendMode.ANTHROPIC
+
+
+def test_buckets_are_still_used_when_no_window_is_reported() -> None:
+    """With API-key billing the buckets are the only signal, so they must count.
+
+    APIキー課金では窓ヘッダーが付かず、バケツが唯一の信号であるため参照すること。
+    """
+    snapshot = parse_quota_headers(
+        httpx.Headers(
+            {
+                "anthropic-ratelimit-requests-limit": "1000",
+                "anthropic-ratelimit-requests-remaining": "50",
+            }
+        )
+    )
+    assert snapshot.remaining_ratio() == pytest.approx(0.05)
+    tracker = QuotaTracker(fallback_threshold_pct=10.0, recovery_threshold_pct=20.0)
+    assert tracker.observe(snapshot) is BackendMode.FALLBACK
+
+
 def test_parse_quota_headers_missing() -> None:
     snapshot = parse_quota_headers(httpx.Headers({}))
     assert snapshot.remaining_ratio() is None

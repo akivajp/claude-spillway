@@ -99,6 +99,22 @@ class RecoveryProbe:
     async def _run(self) -> None:
         interval = self._settings.quota.probe_interval_seconds
         try:
+            # Ollamaの残量だけは待たずに読む。ループが始まるのは最初のリクエストを
+            # 中継した直後だが、ここで待ってしまうと ollama_snapshot が None の
+            # まま interval 秒が過ぎる。その間は「枯渇したOllamaへ送らない」
+            # ガードが判定材料を持てず、起動直後だけ無防備になる。
+            # 読み取りは無料かつ資格情報も不要なので、待つ理由がない。
+            # Read Ollama's headroom without waiting. The loop starts right after
+            # the first relayed request, and sleeping first would leave
+            # ollama_snapshot None for a whole interval - exactly when the guard
+            # against routing into an exhausted Ollama has nothing to judge on.
+            # The read is free and needs no captured credential, so nothing is
+            # gained by deferring it.
+            try:
+                await self._refresh_ollama_usage()
+            except Exception:
+                logger.exception("initial ollama usage read failed")
+
             while True:
                 await asyncio.sleep(interval)
                 if not self._captured_headers:

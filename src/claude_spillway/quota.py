@@ -85,28 +85,44 @@ class QuotaSnapshot:
     source: str = SOURCE_HEADERS
 
     def remaining_ratio(self) -> float | None:
-        """Return the tightest (smallest) remaining ratio among known signals.
+        """Return how much subscription quota is left, as the tightest window.
 
-        We want to fail over early if any one of the 5-hour window, weekly
-        window, request count or token count is close to exhaustion, so the
-        minimum is used.
+        The 5-hour and weekly windows are what "running out of quota" means:
+        they refill on a schedule Anthropic reports, and once spent there is
+        nowhere to go but the other backend.
 
-        既知の指標のうち最も逼迫している(残量が少ない)値を返す。
-        5時間窓・週次窓・リクエスト数・トークン数のいずれか1つでも枯渇に
-        近づけば早めにフェイルオーバーしたいため、最小値を採用する。
+        ``anthropic-ratelimit-{requests,tokens}-remaining`` are a different
+        quantity - short-term buckets that refill continuously - and a low
+        reading there means "wait a moment", not "the quota is gone". Mixing
+        them in made an ordinary burst look like exhaustion and moved traffic
+        off a backend with most of its quota intact, so they are consulted only
+        when no window is reported at all, which is the API-key billing case
+        where they are the only signal there is.
+
+        サブスクリプションのquota残量を、最も逼迫している窓の値として返す。
+        「quotaを使い切る」とは5時間窓と週次窓のことであり、これらはAnthropicが
+        リセット時刻を明示する枠で、尽きたら他のバックエンドへ行くしかない。
+
+        ``anthropic-ratelimit-{requests,tokens}-remaining`` は別物で、継続的に
+        補充される短期バケツである。ここが少ないのは「少し待て」であって
+        「枠が尽きた」ではない。同一視すると通常のバースト利用が枯渇に見え、
+        quotaがほぼ残っているバックエンドからトラフィックを逃がしてしまうため、
+        窓が1つも読めない場合(=これらが唯一の信号であるAPIキー課金の場合)に
+        限って参照する。
         """
-        ratios: list[float] = []
-        if self.utilization_5h is not None:
-            ratios.append(1.0 - self.utilization_5h)
-        if self.utilization_7d is not None:
-            ratios.append(1.0 - self.utilization_7d)
-        if self.requests_remaining_ratio is not None:
-            ratios.append(self.requests_remaining_ratio)
-        if self.tokens_remaining_ratio is not None:
-            ratios.append(self.tokens_remaining_ratio)
-        if not ratios:
-            return None
-        return min(ratios)
+        windows = [
+            1.0 - value
+            for value in (self.utilization_5h, self.utilization_7d)
+            if value is not None
+        ]
+        if windows:
+            return min(windows)
+        buckets = [
+            value
+            for value in (self.requests_remaining_ratio, self.tokens_remaining_ratio)
+            if value is not None
+        ]
+        return min(buckets) if buckets else None
 
 
 @dataclass(frozen=True)

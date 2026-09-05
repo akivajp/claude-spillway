@@ -9,6 +9,7 @@ httpx.MockTransport でAnthropic/Ollama双方の応答を偽装して検証す�
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -128,6 +129,10 @@ async def test_429_from_anthropic_fails_over_mid_session(settings: Settings) -> 
         return httpx.Response(429, json={"error": {"message": "rate limit exceeded"}})
 
     def ollama_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/usage":
+            # 使用状況の読み取りは中継ではないため、中継数には数えない。
+            # Reading usage is not a relay, so it must not count as one.
+            return httpx.Response(200, json=_OLLAMA_USAGE_BODY)
         calls["ollama"] += 1
         return httpx.Response(
             200, json={"id": "msg_ollama", "model": "gpt-oss:120b", "content": []}
@@ -348,4 +353,50 @@ async def test_api_key_auth_never_calls_the_oauth_endpoint(settings: Settings) -
     assert calls["usage"] == 0
     # 通常モードなので有料プローブも撃たない / normal mode, so no paid probe either
     assert calls["messages"] == 0
+    await backends.aclose()
+
+
+async def test_ollama_headroom_is_known_from_the_very_first_request(settings: Settings) -> None:
+    """Ollama's usage must be read at once, not one probe interval later.
+
+    The guard that refuses to route into an exhausted Ollama needs a reading to
+    judge on. While there is none the proxy will happily fail over into a
+    backend that is out, and on a freshly started process that window used to
+    last a whole probe interval - which is exactly when a new install hits it.
+
+    Ollamaの使用状況を、プローブ間隔を待たずに読むこと。
+    「枯渇したOllamaへ送らない」ガードは判定材料となる観測値を必要とする。
+    それが無い間、プロキシは枯渇したバックエンドへ平気で切り替えてしまう。
+    起動直後のプロセスではこの無防備な時間がプローブ間隔まるごとであり、
+    新規導入時にちょうど踏み抜くことになる。
+    """
+    # 間隔を長く取る。修正前はこの間ずっと観測値が無いままだった。
+    # A long interval: before the fix, nothing was read for all of it.
+    settings.quota.probe_interval_seconds = 300.0
+    backends = ProxyBackends(
+        settings,
+        anthropic_transport=httpx.MockTransport(_anthropic_messages_handler([0.5])),
+        ollama_transport=httpx.MockTransport(_ollama_messages_handler),
+    )
+    app = create_app(settings, backends=backends)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        await client.post(
+            "/v1/messages",
+            json={"model": "claude-opus-4-1", "max_tokens": 10, "messages": []},
+            headers={"x-api-key": "sk-ant-test"},
+        )
+
+    # プローブはバックグラウンドタスクなので、完了する隙を与える。
+    # The probe is a background task; give it room to finish.
+    for _ in range(100):
+        if app.state.tracker.ollama_snapshot is not None:
+            break
+        await asyncio.sleep(0.01)
+
+    snapshot = app.state.tracker.ollama_snapshot
+    assert snapshot is not None, "Ollamaの残量が最初のリクエスト時点で読めていない"
+    assert snapshot.weekly_utilization == pytest.approx(0.2)
+    await app.state.recovery_probe.stop()
     await backends.aclose()
