@@ -59,8 +59,22 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "ja": "プロキシサーバーを起動する",
     },
     "cli.serve.config": {
-        "en": "Path to the YAML config file",
-        "ja": "設定YAMLファイルへのパス",
+        "en": (
+            "Path to the YAML config file "
+            "(default: $CLAUDE_SPILLWAY_CONFIG, then the per-user config directory)"
+        ),
+        "ja": (
+            "設定YAMLファイルへのパス"
+            "(省略時: $CLAUDE_SPILLWAY_CONFIG → ユーザー設定ディレクトリ の順に探索)"
+        ),
+    },
+    "cli.config.none": {
+        "en": "(not found; using built-in defaults)",
+        "ja": "(見つからないため組み込みのデフォルト値を使用)",
+    },
+    "cli.warn.config_missing": {
+        "en": "warning: config file not found: {path} (continuing with built-in defaults)",
+        "ja": "warning: 設定ファイルが見つかりません: {path} (組み込みのデフォルト値で続行します)",
     },
     "cli.serve.host": {
         "en": "Listen host (overrides the config file)",

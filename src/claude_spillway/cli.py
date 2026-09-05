@@ -9,7 +9,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.logging import RichHandler
 
-from .config import Settings
+from .config import Settings, resolve_config_path
 from .i18n import t
 
 console = Console()
@@ -79,7 +79,28 @@ def _setup_logging(level: str) -> None:
 
 
 def _run_serve(args: argparse.Namespace) -> None:
-    settings = Settings.load(args.config)
+    # Without --config, fall back to $CLAUDE_SPILLWAY_CONFIG and then the
+    # per-user config directory, so a service unit can just run "serve".
+    # --config 未指定時は $CLAUDE_SPILLWAY_CONFIG → ユーザー設定ディレクトリ の順に
+    # 探索する。これによりサービス定義側は "serve" だけで済む。
+    config_path = resolve_config_path(args.config)
+    if config_path is not None and not config_path.exists():
+        # Only reachable for an explicit --config: warn instead of silently
+        # falling back to the defaults, which would hide a typo.
+        # ここに来るのは --config 明示指定時のみ。黙ってデフォルトに倒すと
+        # パスの打ち間違いに気づけないため警告する。
+        console.print(f"[yellow]{t('cli.warn.config_missing', path=config_path)}[/yellow]")
+
+    # Banner text: make "specified but missing" visibly different from "loaded".
+    # バナー表示: 「指定されたが存在しない」と「読み込んだ」を見た目で区別する。
+    if config_path is None:
+        config_display = t("cli.config.none")
+    elif config_path.exists():
+        config_display = str(config_path)
+    else:
+        config_display = f"{config_path} {t('cli.config.none')}"
+
+    settings = Settings.load(config_path)
     settings = _apply_overrides(settings, args)
     _setup_logging(settings.log_level)
 
@@ -87,6 +108,7 @@ def _run_serve(args: argparse.Namespace) -> None:
     # identical in every locale.
     # 起動時バナーは項目名と値だけなので、どのロケールでも表示は共通。
     console.rule("[bold cyan]claude-spillway[/bold cyan]")
+    console.print(f"config         : {config_display}")
     console.print(f"listen         : {settings.listen.host}:{settings.listen.port}")
     console.print(f"anthropic      : {settings.anthropic.base_url}")
     console.print(f"ollama         : {settings.ollama.base_url}")

@@ -16,6 +16,73 @@ from pydantic import BaseModel, Field
 
 _ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
+#: Environment variable naming an explicit config file, checked before the
+#: OS-standard location. Handy for systemd units and scheduled tasks.
+#: OS標準の場所より先に参照される、設定ファイルを明示指定するための環境変数。
+#: systemdのunitやタスクスケジューラから指定するのに便利。
+CONFIG_ENV_VAR = "CLAUDE_SPILLWAY_CONFIG"
+
+#: File name looked up inside the user config directory.
+#: ユーザー設定ディレクトリ内で探されるファイル名。
+CONFIG_FILE_NAME = "config.yaml"
+
+
+def user_config_dir() -> Path:
+    """Return the OS-standard per-user config directory for this tool.
+
+    ``%APPDATA%\\claude-spillway`` on Windows, and
+    ``$XDG_CONFIG_HOME/claude-spillway`` (defaulting to ``~/.config``) elsewhere.
+
+    このツール用の、OS標準のユーザー単位設定ディレクトリを返す。
+    Windowsでは ``%APPDATA%\\claude-spillway``、それ以外では
+    ``$XDG_CONFIG_HOME/claude-spillway`` (既定は ``~/.config``)。
+    """
+    if os.name == "nt":
+        base = os.environ.get("APPDATA")
+        # APPDATA is effectively always set on Windows, but fall back to the
+        # canonical location rather than raising if it is missing.
+        # WindowsではAPPDATAはまず設定されているが、無い場合も例外にせず既定の場所へ倒す。
+        root = Path(base) if base else Path.home() / "AppData" / "Roaming"
+        return root / "claude-spillway"
+    base = os.environ.get("XDG_CONFIG_HOME")
+    root = Path(base) if base else Path.home() / ".config"
+    return root / "claude-spillway"
+
+
+def default_config_candidates() -> list[Path]:
+    """List the config paths searched when ``--config`` is not given, in order.
+
+    ``--config`` が指定されなかった場合に探索する設定ファイルパスを、優先順に返す。
+    """
+    candidates: list[Path] = []
+    from_env = os.environ.get(CONFIG_ENV_VAR)
+    if from_env:
+        candidates.append(Path(from_env).expanduser())
+    candidates.append(user_config_dir() / CONFIG_FILE_NAME)
+    return candidates
+
+
+def resolve_config_path(explicit: Path | None) -> Path | None:
+    """Decide which config file to load.
+
+    An explicit ``--config`` wins and is returned even when it does not exist,
+    so the caller can warn about a typo instead of silently using defaults.
+    ``None`` means no config file was found and built-in defaults apply.
+
+    どの設定ファイルを読み込むかを決定する。
+    ``--config`` の明示指定は最優先で、存在しない場合もそのまま返す
+    (呼び出し側が「黙ってデフォルトを使う」のではなく警告を出せるようにするため)。
+    ``None`` は設定ファイルが見つからず、組み込みのデフォルト値を使うことを意味する。
+    """
+    if explicit is not None:
+        return explicit
+    for candidate in default_config_candidates():
+        if candidate.exists():
+            return candidate
+    return None
+
+
+
 def _expand_env_vars(value: Any) -> Any:
     """Replace ``${ENV_VAR}`` in config values with the process environment.
 

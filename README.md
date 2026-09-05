@@ -123,7 +123,13 @@ fake upstream servers — see
 
 See [`config.example.yaml`](config.example.yaml) for the full reference.
 
-Key fields:
+When `-c` is omitted, the config file is looked up in this order:
+
+1. the path in the `CLAUDE_SPILLWAY_CONFIG` environment variable
+2. `~/.config/claude-spillway/config.yaml` (honours `$XDG_CONFIG_HOME`; on
+   Windows, `%APPDATA%\claude-spillway\config.yaml`)
+
+If neither exists, claude-spillway starts on its built-in defaults. Key fields:
 
 | Field | Default | Description |
 |---|---|---|

@@ -79,7 +79,14 @@ uv sync
 
 ## 設定
 
-全項目は[`config.example.yaml`](config.example.yaml)を参照してください。主な項目:
+全項目は[`config.example.yaml`](config.example.yaml)を参照してください。
+
+`-c` を省略した場合、次の順で設定ファイルを探索します:
+
+1. 環境変数 `CLAUDE_SPILLWAY_CONFIG` が指すパス
+2. `~/.config/claude-spillway/config.yaml`(`$XDG_CONFIG_HOME` を尊重。Windowsでは `%APPDATA%\claude-spillway\config.yaml`)
+
+どちらにも無い場合は組み込みのデフォルト値で起動します。主な項目:
 
 | 項目 | デフォルト | 説明 |
 |---|---|---|
