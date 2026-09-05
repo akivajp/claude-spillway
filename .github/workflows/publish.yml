@@ -24,10 +24,12 @@ jobs:
       # OIDCトークンの発行に必要 / required to mint the OIDC token
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        # setup-uv は v8 以降 v10 のような浮動メジャータグを publish していないため正確に指定する
+        # setup-uv stopped publishing floating major tags after v7, so pin the exact release
+        uses: astral-sh/setup-uv@v10.0.1
 
       - name: Install dependencies
         run: uv sync --all-groups
