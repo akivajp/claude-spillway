@@ -210,6 +210,11 @@ _MESSAGES: dict[str, dict[str, str]] = {
     # drift apart in wording.
     # TUIに対応する語のないものだけをここに置く。両方の画面で共通する語は
     # 上の monitor.* を再利用し、文言が二重管理で食い違わないようにする。
+    # 言語名は各言語自身の呼び名(自称)で書く。切替UIの選択肢は、その言語を
+    # 読む人に読めなければ意味がないため、翻訳ではなく自称を使う。
+    # Each language names itself: an option in a language switcher is useless
+    # unless it is legible to the person looking for that language.
+    "dashboard.language.name": {"en": "English", "ja": "日本語"},
     "dashboard.badge.anthropic": {"en": "ANTHROPIC", "ja": "ANTHROPIC"},
     "dashboard.badge.fallback": {"en": "OLLAMA (fallback)", "ja": "OLLAMA (フォールバック中)"},
     "dashboard.badge.offline": {"en": "UNREACHABLE", "ja": "接続不能"},
@@ -272,6 +277,14 @@ def _normalize(raw: str) -> str | None:
         if code in _SUPPORTED_LANGUAGES:
             return code
     return None
+
+
+def supported_languages() -> tuple[str, ...]:
+    """Return the language codes this catalog can render.
+
+    このカタログが表示できる言語コードを返す。
+    """
+    return _SUPPORTED_LANGUAGES
 
 
 def negotiate_language(accept_language: str | None) -> str | None:

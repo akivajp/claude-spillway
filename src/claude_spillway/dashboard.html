@@ -40,6 +40,11 @@
   }
 }
 * { box-sizing: border-box; }
+/* 作者スタイルはUAスタイルシートに優先するため、`.grid { display: grid }` のような
+   指定は hidden 属性を打ち消してしまう。属性の方を必ず勝たせる。
+   Author styles outrank the UA stylesheet, so a rule like `.grid{display:grid}`
+   silently defeats the hidden attribute. Make the attribute win. */
+[hidden] { display: none !important; }
 body {
   margin: 0;
   padding: 1.25rem;
@@ -82,10 +87,15 @@ select {
    align-items:start keeps a short card from being stretched to match a tall one. */
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
   align-items: start;
   gap: 1rem;
 }
+/* グリッド項目の既定の min-width:auto は「内容より狭くならない」を意味するため、
+   長いラベルを持つカードが画面幅を超えて横スクロールを生む。0 にして縮ませる。
+   A grid item's default min-width:auto means "never narrower than my content",
+   so a card with long labels pushes the page wider than the viewport. */
+.card { min-width: 0; }
 .card {
   background: var(--card);
   border: 1px solid var(--line);
@@ -146,6 +156,7 @@ select {
 table.kv { width: 100%; border-collapse: collapse; margin-top: .9rem; font-size: .82rem; }
 table.kv th, table.kv td { text-align: left; padding: .25rem 0; vertical-align: top; }
 table.kv th { color: var(--muted); font-weight: 450; white-space: nowrap; padding-right: .8rem; }
+
 table.kv td { font-variant-numeric: tabular-nums; word-break: break-word; }
 table.kv tr.hide { display: none; }
 
@@ -162,6 +173,12 @@ footer code { font-size: .95em; }
 .banner.show { display: block; }
 .banner.error { background: color-mix(in srgb, var(--bad) 10%, transparent); border-color: color-mix(in srgb, var(--bad) 35%, transparent); color: var(--bad); }
 .banner.info  { background: color-mix(in srgb, var(--accent) 10%, transparent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); color: var(--fg); }
+
+/* 狭い画面では、ラベルの nowrap がカードを画面幅より広げてしまうので折り返す。
+   On a narrow screen the nowrap labels would widen the card past the viewport. */
+@media (max-width: 560px) {
+  table.kv th { white-space: normal; }
+}
 </style>
 </head>
 <body>
@@ -172,6 +189,13 @@ footer code { font-size: .95em; }
     <span class="badge" id="badge">…</span>
     <span class="sub" id="reason" style="color:var(--muted);font-size:.8rem"></span>
     <span class="spacer"></span>
+    <!--
+      言語切替。選択肢は同梱された文言カタログから組み立てるため、対応言語が
+      増えてもここは変更不要。
+      The options are built from the bundled catalog, so adding a language
+      needs no change here.
+    -->
+    <select id="lang" aria-label="Language"></select>
     <label style="color:var(--muted);font-size:.8rem" for="interval" id="l-refresh"></label>
     <select id="interval">
       <option value="2">2s</option>
@@ -226,11 +250,20 @@ footer code { font-size: .95em; }
 </div>
 
 <script>
-// サーバー側のメッセージカタログから注入される文言。TUIと同じ語彙を使うため、
-// ここでは翻訳を持たない。
-// Labels injected from the server-side catalog, so this page shares the TUI's
-// vocabulary instead of carrying a second set of translations.
-const L = __CS_LABELS__;
+// サーバー側のメッセージカタログから注入される、全対応言語の文言。TUIと同じ語彙を
+// 使うため、ここでは翻訳を持たない。全言語を載せているのは、切り替えのたびに
+// 再読み込みさせないため。
+// Every supported language, injected from the server-side catalog, so this page
+// shares the TUI's vocabulary instead of carrying a second set of translations.
+// All of them ship together so switching needs no reload.
+const LABELS = __CS_LABELS__;
+//: サーバーが Accept-Language から選んだ初期表示言語。閲覧者の保存済みの選択が
+//: あればそちらが優先される。
+//: The language the server picked from Accept-Language; a viewer's saved
+//: choice wins over it.
+const DEFAULT_LANG = "__CS_LANG__";
+let lang = DEFAULT_LANG;
+let L = LABELS[lang] || LABELS[Object.keys(LABELS)[0]];
 // 絶対パスで参照する。/_spillway と /_spillway/ ではベースURLが変わるため、
 // 相対パスだと片方で解決先がずれる。
 // An absolute path: /_spillway and /_spillway/ have different base URLs,
@@ -241,6 +274,11 @@ const STATUS_URL = "/_spillway/status";
  *  The last payload received; the per-second countdown redraws from it. */
 let latest = null;
 let timer = null;
+/** 表示中のバナー。整形済みの文字列ではなく「どの文言をどの引数で」を保持する。
+ *  そうしないと言語を切り替えたときに前の言語のまま残ってしまう。
+ *  The banner as an instruction, not as rendered text: keeping the string would
+ *  leave it in the previous language after a switch. */
+let banner = null;
 
 // --- 整形ヘルパー / formatting helpers ------------------------------------
 
@@ -356,7 +394,7 @@ function render(data) {
   // 一度もリクエストが通っていない間は数値が出せない。理由を明示する。
   // Nothing to show until a real request has passed through; say why.
   const waiting = a.observed_at === null && !o.observed_at && !o.last_request_at;
-  showBanner(waiting ? "info" : null, L.waiting);
+  showBanner(waiting ? "info" : null, "waiting");
 
   // --- Anthropic ---
   const fallbackAt = (th.fallback_pct ?? 0) / 100;
@@ -404,10 +442,21 @@ function render(data) {
   document.getElementById("footer").hidden = false;
 }
 
-function showBanner(kind, text) {
+/** バナーを指定する。``key`` は文言カタログのキー、``params`` は差し込む値。
+ *  Set the banner by catalog ``key`` plus ``params`` to substitute. */
+function showBanner(kind, key, params) {
+  banner = kind ? { kind, key, params: params || {} } : null;
+  renderBanner();
+}
+
+function renderBanner() {
   const el = document.getElementById("banner");
-  if (!kind) { el.className = "banner"; return; }
-  el.className = "banner show " + kind;
+  if (!banner) { el.className = "banner"; return; }
+  let text = L[banner.key] || banner.key;
+  for (const [name, value] of Object.entries(banner.params)) {
+    text = text.replace("{" + name + "}", value);
+  }
+  el.className = "banner show " + banner.kind;
   el.textContent = text;
 }
 
@@ -426,7 +475,7 @@ async function poll() {
     const badge = document.getElementById("badge");
     badge.textContent = L.badge_offline;
     badge.className = "badge offline";
-    showBanner("error", L.unreachable.replace("{error}", err.message));
+    showBanner("error", "unreachable", { error: err.message });
   }
 }
 
@@ -447,9 +496,9 @@ function applyInterval() {
   try { localStorage.setItem("cs.interval", String(seconds)); } catch (_) { /* プライベートモード等 */ }
 }
 
-function init() {
-  // 固定文言の流し込み(HTML側に二言語を書かないための対応)。
-  // Fill the static labels, so the markup carries no language of its own.
+/** 固定文言の流し込み(HTML側に特定の言語を書かないための対応)。
+ *  Fill the static labels, so the markup carries no language of its own. */
+function fillStatics() {
   const statics = {
     "l-refresh": L.refresh, "o-paused": L.paused,
     "l-requests": L.requests, "l-tokens": L.tokens,
@@ -460,6 +509,48 @@ function init() {
     "o-estimate-note": L.estimate_note,
   };
   for (const [id, text] of Object.entries(statics)) setText(id, text);
+}
+
+/** 表示言語を切り替える。取得済みのデータはそのまま描き直すため、切り替えに
+ *  通信は発生せず、直前まで見ていた値が消えることもない。
+ *  Switch the display language. The data already in hand is simply redrawn, so
+ *  switching costs no request and loses nothing that was on screen. */
+function applyLanguage(next) {
+  if (!LABELS[next]) return;
+  lang = next;
+  L = LABELS[lang];
+  // 支援技術やフォント選択が正しく働くよう、実際の言語を宣言し直す。
+  // Re-declare the actual language so assistive tech and font selection follow.
+  document.documentElement.lang = lang;
+  document.getElementById("lang").value = lang;
+  try { localStorage.setItem("cs.lang", lang); } catch (_) { /* プライベートモード等 */ }
+  fillStatics();
+  renderBanner();
+  if (latest) render(latest);
+}
+
+function init() {
+  // 言語の選択肢は同梱カタログから作る。各言語は自称で表示する。
+  // Options come from the bundled catalog; each language names itself.
+  const langSelect = document.getElementById("lang");
+  for (const code of Object.keys(LABELS)) {
+    const option = document.createElement("option");
+    option.value = code;
+    option.textContent = LABELS[code].language_name || code;
+    langSelect.append(option);
+  }
+  langSelect.addEventListener("change", () => applyLanguage(langSelect.value));
+
+  // 保存済みの選択があればサーバーの判定より優先する。明示的に選んだ結果は、
+  // ブラウザが送る希望言語より確かな意思表示であるため。
+  // A saved choice outranks the server's guess: someone who picked a language
+  // has stated their preference more definitely than Accept-Language does.
+  let initial = DEFAULT_LANG;
+  try {
+    const saved = localStorage.getItem("cs.lang");
+    if (saved && LABELS[saved]) initial = saved;
+  } catch (_) { /* ignore */ }
+  applyLanguage(initial);
 
   const select = document.getElementById("interval");
   try {

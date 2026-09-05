@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from .backends import ProxyBackends, to_streaming_response
 from .config import Settings
-from .i18n import get_language, negotiate_language, set_language, t
+from .i18n import get_language, negotiate_language, set_language, supported_languages, t
 from .quota import BackendMode, QuotaTracker, RoutingPolicy
 from .recovery import RecoveryProbe
 
@@ -70,6 +70,7 @@ _DASHBOARD_LABELS: dict[str, str] = {
     "last_error": "monitor.row.last_error",
     "source_headers": "monitor.source.headers",
     "source_usage_api": "monitor.source.usage_api",
+    "language_name": "dashboard.language.name",
 }
 
 #: Rendered pages keyed by language. The page is static once built, and it is
@@ -79,17 +80,46 @@ _DASHBOARD_LABELS: dict[str, str] = {
 _dashboard_cache: dict[str, str] = {}
 
 
+def _all_labels() -> dict[str, dict[str, str]]:
+    """Build the dashboard's labels in every supported language.
+
+    All of them ship in the page so the language switcher can work without a
+    round trip. The whole catalog is a few hundred bytes, far less than the
+    reload it saves.
+
+    ダッシュボードの文言を、対応するすべての言語ぶん組み立てる。
+    言語切替を通信なしで行えるよう、すべてをページに載せる。カタログ全体でも
+    数百バイトで、再読み込み1回よりはるかに軽い。
+    """
+    # カタログの参照はプロセス全体の言語設定に従うため、順に切り替えて引き、
+    # 必ず元へ戻す。TUIやログの言語を巻き添えにしないため。
+    # Catalog lookups follow the process-wide language, so switch through each
+    # in turn and always switch back: the TUI and the logs must not be dragged
+    # along by what a browser asked for.
+    previous = get_language()
+    try:
+        labels = {}
+        for language in supported_languages():
+            set_language(language)
+            labels[language] = {name: t(key) for name, key in _DASHBOARD_LABELS.items()}
+    finally:
+        set_language(previous)
+    return labels
+
+
 def render_dashboard(language: str | None = None) -> str:
-    """Return the dashboard page with ``language``'s labels baked in.
+    """Return the dashboard page, opening in ``language``.
 
     Placeholders are substituted rather than templated so that the ``.html``
-    file stays valid, editable HTML on its own. ``language`` defaults to the
-    process locale, which is the right answer for everything but a browser.
+    file stays valid, editable HTML on its own. ``language`` only picks which
+    of the bundled languages the page starts in - the viewer can switch freely
+    afterwards - and defaults to the process locale.
 
-    指定された言語の文言を埋め込んだダッシュボードのHTMLを返す。
+    ``language`` で開くダッシュボードのHTMLを返す。
     テンプレートエンジンを使わずプレースホルダ置換にしているのは、``.html``
     ファイル単体でも正しいHTMLとして編集・確認できるようにするため。
-    ``language`` の既定はプロセスのロケールで、ブラウザ以外の用途ではこれが正しい。
+    ``language`` は同梱された言語のうちどれで開くかを決めるだけで(閲覧者は後から
+    自由に切り替えられる)、既定はプロセスのロケール。
     """
     language = language or get_language()
     cached = _dashboard_cache.get(language)
@@ -99,22 +129,11 @@ def render_dashboard(language: str | None = None) -> str:
     # ``{...}`` を含むCSS/JSと衝突しないよう、str.format ではなく置換を使う。
     # Plain replacement, not str.format: the CSS and JS are full of braces.
     source = resources.files(__package__).joinpath("dashboard.html").read_text(encoding="utf-8")
-    # カタログの参照はプロセス全体の言語設定に従うため、目的の言語へ切り替えて
-    # から引き、必ず元へ戻す。TUIやログの言語を巻き添えにしないため。
-    # Catalog lookups follow the process-wide language, so switch to the target
-    # for the lookups and always switch back: the TUI and the logs must not be
-    # dragged along by a browser's preference.
-    previous = get_language()
-    try:
-        set_language(language)
-        labels = {name: t(key) for name, key in _DASHBOARD_LABELS.items()}
-    finally:
-        set_language(previous)
     page = source.replace("__CS_LANG__", language).replace(
         # ``</script>`` がラベル中に現れてもHTMLを壊さないよう、``/`` を退避する。
         # Escape ``/`` so a label containing ``</script>`` cannot break out.
         "__CS_LABELS__",
-        json.dumps(labels, ensure_ascii=False).replace("</", "<\\/"),
+        json.dumps(_all_labels(), ensure_ascii=False).replace("</", "<\\/"),
     )
     _dashboard_cache[language] = page
     return page

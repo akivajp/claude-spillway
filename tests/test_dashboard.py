@@ -17,8 +17,18 @@ import pytest
 
 from claude_spillway.backends import ProxyBackends
 from claude_spillway.config import Settings
-from claude_spillway.i18n import get_language, negotiate_language, set_language
-from claude_spillway.proxy_app import _dashboard_cache, create_app, render_dashboard
+from claude_spillway.i18n import (
+    get_language,
+    negotiate_language,
+    set_language,
+    supported_languages,
+)
+from claude_spillway.proxy_app import (
+    _all_labels,
+    _dashboard_cache,
+    create_app,
+    render_dashboard,
+)
 
 
 @pytest.fixture
@@ -188,3 +198,52 @@ async def test_browser_language_wins_over_the_process_locale(settings: Settings)
     assert get_language() == "en"
     assert japanese.headers["vary"] == "Accept-Language"
     await backends.aclose()
+
+
+def test_every_supported_language_ships_in_the_page() -> None:
+    """The switcher works without a round trip, so every language must be there.
+
+    A language present in the catalog but missing from the page would show up
+    as an option that silently does nothing.
+
+    切替は通信なしで行うため、全言語がページに載っていること。
+    カタログにあってページに無い言語は、押しても何も起きない選択肢になる。
+    """
+    set_language("en")
+    _dashboard_cache.clear()
+    page = render_dashboard()
+    for language in supported_languages():
+        assert f'"{language}"' in page
+    assert "OLLAMA (fallback)" in page
+    assert "OLLAMA (フォールバック中)" in page
+
+
+def test_each_language_names_itself_in_the_switcher() -> None:
+    """Options are autonyms: an option is useless if its seeker cannot read it.
+
+    選択肢は自称で示す。その言語を探している人に読めない選択肢は役に立たない。
+    """
+    labels = _all_labels()
+    assert labels["en"]["language_name"] == "English"
+    assert labels["ja"]["language_name"] == "日本語"
+    assert set(labels) == set(supported_languages())
+
+
+def test_no_language_is_missing_a_label() -> None:
+    """A gap would render as an English string among Japanese ones, or worse.
+
+    Missing entries fall back to English rather than crashing, which is easy to
+    ship without noticing; this makes it fail in CI instead.
+
+    抜けがあると日本語の中に英語が1つ混じる(あるいはキー名がそのまま出る)。
+    翻訳漏れは落ちずに英語へフォールバックするため気づきにくい。CIで落とす。
+    """
+    labels = _all_labels()
+    english = labels["en"]
+    for language, entries in labels.items():
+        assert set(entries) == set(english), f"{language} has a different set of labels"
+        if language != "en":
+            untranslated = [k for k, v in entries.items() if v == english[k]]
+            # ANTHROPIC など固有名詞は同一で正しいため、既知のものだけ許容する。
+            # Proper nouns such as ANTHROPIC are legitimately identical.
+            assert untranslated == ["badge_anthropic"], untranslated
