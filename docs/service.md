@@ -115,6 +115,27 @@ systemctl --user restart claude-spillway
 
 Every field is documented in [config.example.yaml](../config.example.yaml).
 
+### Sharing it across machines
+
+`config.yaml` holds no secrets — the API key stays in the separate `env` file —
+so it can live in a dotfiles repository and be symlinked into place:
+
+```bash
+ln -s ~/dotfiles/claude-spillway/config.yaml ~/.config/claude-spillway/config.yaml
+```
+
+Do this **before** running the installer, which leaves an existing
+`config.yaml` alone, symlink included.
+
+The config does not follow upgrades. After `uv tool upgrade`, diff it against
+[config.example.yaml](../config.example.yaml) to pick up options added since
+you installed:
+
+```bash
+diff <(sed -n '/^listen:/,$p' ~/.config/claude-spillway/config.yaml) \
+     <(sed -n '/^listen:/,$p' config.example.yaml)
+```
+
 ## Troubleshooting
 
 | Symptom | Cause and fix |

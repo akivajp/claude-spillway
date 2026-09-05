@@ -99,6 +99,23 @@ systemctl --user restart claude-spillway
 
 全項目は [config.example.yaml](../config.example.yaml) を参照してください。
 
+### 複数マシンでの共有
+
+`config.yaml` に秘密情報は含まれません（APIキーは別ファイルの `env` に分離されています）。そのため dotfiles リポジトリに置いてシンボリックリンクで配置できます。
+
+```bash
+ln -s ~/dotfiles/claude-spillway/config.yaml ~/.config/claude-spillway/config.yaml
+```
+
+インストーラは既存の `config.yaml` を（シンボリックリンクであっても）上書きしないため、**リンクを先に張ってから**実行するのが簡単です。
+
+設定ファイルは本体の更新に追従しません。`uv tool upgrade` の後は、雛形と差分を取って新しく増えた項目を確認してください。
+
+```bash
+diff <(sed -n '/^listen:/,$p' ~/.config/claude-spillway/config.yaml) \
+     <(sed -n '/^listen:/,$p' config.example.yaml)
+```
+
 ## トラブルシューティング
 
 | 症状 | 原因と対処 |
