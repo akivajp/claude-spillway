@@ -622,17 +622,21 @@ class QuotaTracker:
         #    Ollamaを使えなくする条件(最優先)。
         if now < self._ollama_blocked_until:
             return self._ensure(BackendMode.ANTHROPIC, "ollama_cooldown")
-        if ollama_remaining is not None and ollama_remaining < self._ollama_min_remaining:
-            # Below Ollama's floor, but stand down only while Anthropic reads
-            # and holds strictly more. When Anthropic is itself exhausted (or
-            # unreadable) its last drops are worthless, so spending Ollama's
-            # remaining few percent beats relaying into guaranteed rejections.
-            # Ollamaが下限を下回っても、Anthropicが読めてかつより余裕がある場合に
-            # 限って使用を断念する。Anthropic自身が枯渇(または読めない)場合、
-            # そちらに送り続けるのは確実な拒否であって、Ollamaの残り数%を使う
-            # 方がまだましである。
-            if anthropic_remaining is not None and anthropic_remaining > ollama_remaining:
-                return self._ensure(BackendMode.ANTHROPIC, "ollama_exhausted")
+        # Below Ollama's floor, but stand down only while Anthropic reads
+        # and holds strictly more. When Anthropic is itself exhausted (or
+        # unreadable) its last drops are worthless, so spending Ollama's
+        # remaining few percent beats relaying into guaranteed rejections.
+        # Ollamaが下限を下回っても、Anthropicが読めてかつより余裕がある場合に
+        # 限って使用を断念する。Anthropic自身が枯渇(または読めない)場合、
+        # そちらに送り続けるのは確実な拒否であって、Ollamaの残り数%を使う
+        # 方がまだましである。
+        if (
+            ollama_remaining is not None
+            and ollama_remaining < self._ollama_min_remaining
+            and anthropic_remaining is not None
+            and anthropic_remaining > ollama_remaining
+        ):
+            return self._ensure(BackendMode.ANTHROPIC, "ollama_exhausted")
 
         if anthropic_remaining is None:
             # Nothing observed yet; keep whatever we are doing.
