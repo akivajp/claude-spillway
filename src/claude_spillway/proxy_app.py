@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from .backends import ProxyBackends, to_streaming_response
 from .config import Settings
-from .i18n import get_language, t
+from .i18n import get_language, negotiate_language, set_language, t
 from .quota import BackendMode, QuotaTracker, RoutingPolicy
 from .recovery import RecoveryProbe
 
@@ -79,17 +79,19 @@ _DASHBOARD_LABELS: dict[str, str] = {
 _dashboard_cache: dict[str, str] = {}
 
 
-def render_dashboard() -> str:
-    """Return the dashboard page with the current language's labels baked in.
+def render_dashboard(language: str | None = None) -> str:
+    """Return the dashboard page with ``language``'s labels baked in.
 
     Placeholders are substituted rather than templated so that the ``.html``
-    file stays valid, editable HTML on its own.
+    file stays valid, editable HTML on its own. ``language`` defaults to the
+    process locale, which is the right answer for everything but a browser.
 
-    現在の言語の文言を埋め込んだダッシュボードのHTMLを返す。
+    指定された言語の文言を埋め込んだダッシュボードのHTMLを返す。
     テンプレートエンジンを使わずプレースホルダ置換にしているのは、``.html``
     ファイル単体でも正しいHTMLとして編集・確認できるようにするため。
+    ``language`` の既定はプロセスのロケールで、ブラウザ以外の用途ではこれが正しい。
     """
-    language = get_language()
+    language = language or get_language()
     cached = _dashboard_cache.get(language)
     if cached is not None:
         return cached
@@ -97,7 +99,17 @@ def render_dashboard() -> str:
     # ``{...}`` を含むCSS/JSと衝突しないよう、str.format ではなく置換を使う。
     # Plain replacement, not str.format: the CSS and JS are full of braces.
     source = resources.files(__package__).joinpath("dashboard.html").read_text(encoding="utf-8")
-    labels = {name: t(key) for name, key in _DASHBOARD_LABELS.items()}
+    # カタログの参照はプロセス全体の言語設定に従うため、目的の言語へ切り替えて
+    # から引き、必ず元へ戻す。TUIやログの言語を巻き添えにしないため。
+    # Catalog lookups follow the process-wide language, so switch to the target
+    # for the lookups and always switch back: the TUI and the logs must not be
+    # dragged along by a browser's preference.
+    previous = get_language()
+    try:
+        set_language(language)
+        labels = {name: t(key) for name, key in _DASHBOARD_LABELS.items()}
+    finally:
+        set_language(previous)
     page = source.replace("__CS_LANG__", language).replace(
         # ``</script>`` がラベル中に現れてもHTMLを壊さないよう、``/`` を退避する。
         # Escape ``/`` so a label containing ``</script>`` cannot break out.
@@ -246,15 +258,30 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
     # first and relay the request to Anthropic.
     @app.get("/_spillway", include_in_schema=False)
     @app.get("/_spillway/", include_in_schema=False)
-    async def dashboard() -> HTMLResponse:
+    async def dashboard(request: Request) -> HTMLResponse:
         """Serve the browser dashboard that renders the status endpoint.
 
         ステータスAPIを可視化するブラウザ用ダッシュボードを返す。
         """
-        # 更新のたびに取り直させる。バージョンアップ後に古いページが残ると、
-        # 表示だけ古いという分かりにくい状態になるため。
-        # Always refetch: a stale page after an upgrade is a confusing failure.
-        return HTMLResponse(render_dashboard(), headers={"Cache-Control": "no-store"})
+        # ブラウザの希望言語を優先する。このプロセスは通常systemdユーザーサービス
+        # として動いており、その LANG は利用者のロケールを反映しない(C.UTF-8 になる)。
+        # 該当が無ければプロセスのロケールに戻す。
+        # Prefer what the browser asks for: this process usually runs as a
+        # systemd user service, whose LANG does not reflect the person's locale
+        # (it is C.UTF-8). Fall back to the process locale when nothing matches.
+        language = negotiate_language(request.headers.get("accept-language"))
+        return HTMLResponse(
+            render_dashboard(language),
+            headers={
+                # 更新のたびに取り直させる。バージョンアップ後に古いページが残ると、
+                # 表示だけ古いという分かりにくい状態になるため。
+                # Always refetch: a stale page after an upgrade is confusing.
+                "Cache-Control": "no-store",
+                # 言語ごとに内容が変わることを、間に入る何かにも伝えておく。
+                # Tell any intermediary that the body varies by language.
+                "Vary": "Accept-Language",
+            },
+        )
 
     @app.api_route(
         "/{full_path:path}",

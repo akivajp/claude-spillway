@@ -17,7 +17,7 @@ import pytest
 
 from claude_spillway.backends import ProxyBackends
 from claude_spillway.config import Settings
-from claude_spillway.i18n import set_language
+from claude_spillway.i18n import get_language, negotiate_language, set_language
 from claude_spillway.proxy_app import _dashboard_cache, create_app, render_dashboard
 
 
@@ -127,3 +127,64 @@ def test_dashboard_html_ships_as_package_data() -> None:
     resource = resources.files("claude_spillway").joinpath("dashboard.html")
     assert resource.is_file()
     assert "<!doctype html>" in resource.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        ("ja", "ja"),
+        ("ja-JP,ja;q=0.9,en-US;q=0.8", "ja"),
+        ("en-GB,en;q=0.9", "en"),
+        # 品質値の順が記述順と食い違う場合は品質値が勝つ。
+        # Quality wins over the written order when the two disagree.
+        ("en;q=0.5,ja;q=0.9", "ja"),
+        # q=0 は「この言語は要らない」の意なので候補から外す。
+        # q=0 means "not this one", so it must not be selected.
+        ("ja;q=0, en", "en"),
+        ("*", None),
+        ("de,fr;q=0.8", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_accept_language_negotiation(header: str | None, expected: str | None) -> None:
+    """The header drives the page's language, including its quality values.
+
+    ヘッダーの品質値まで含めてページの言語が決まること。
+    """
+    assert negotiate_language(header) == expected
+
+
+async def test_browser_language_wins_over_the_process_locale(settings: Settings) -> None:
+    """A browser asking for Japanese gets Japanese from an English process.
+
+    This is the case that matters in practice: the proxy runs as a systemd user
+    service with LANG=C.UTF-8, so without this the page is always English.
+
+    英語ロケールのプロセスでも、日本語を要求したブラウザには日本語を返すこと。
+    実運用で効くのはこの経路である。プロキシは LANG=C.UTF-8 のsystemdユーザー
+    サービスとして動くため、これが無いとページは常に英語になる。
+    """
+    set_language("en")
+    transport = httpx.MockTransport(_unreachable)
+    backends = ProxyBackends(settings, anthropic_transport=transport, ollama_transport=transport)
+    app = create_app(settings, backends=backends)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        japanese = await client.get("/_spillway/", headers={"accept-language": "ja-JP,ja;q=0.9"})
+        english = await client.get("/_spillway/", headers={"accept-language": "en-US"})
+        unspecified = await client.get("/_spillway/")
+
+    assert '<html lang="ja"' in japanese.text
+    assert "OLLAMA (フォールバック中)" in japanese.text
+    assert '<html lang="en"' in english.text
+    # ヘッダーが無ければプロセスのロケールに戻る。
+    # With no header, it falls back to the process locale.
+    assert '<html lang="en"' in unspecified.text
+    # ページの言語交渉がプロセス全体の言語を書き換えてしまわないこと。
+    # Negotiating a page's language must not rewrite the process-wide one.
+    assert get_language() == "en"
+    assert japanese.headers["vary"] == "Accept-Language"
+    await backends.aclose()

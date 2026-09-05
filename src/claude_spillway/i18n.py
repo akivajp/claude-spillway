@@ -274,6 +274,59 @@ def _normalize(raw: str) -> str | None:
     return None
 
 
+def negotiate_language(accept_language: str | None) -> str | None:
+    """Pick a supported language from an HTTP ``Accept-Language`` header.
+
+    Returns ``None`` when the header is absent or names nothing supported, so
+    the caller can fall back to its own default.
+
+    This exists because a served page has a different audience from the
+    process serving it: the proxy typically runs as a systemd user service,
+    whose environment carries ``LANG=C.UTF-8`` regardless of the person's own
+    locale. For a browser view, what the browser asks for is the better signal.
+
+    HTTPの ``Accept-Language`` ヘッダーから、対応言語を1つ選んで返す。
+    ヘッダーが無い、または対応言語を含まない場合は ``None`` を返し、
+    呼び出し側が自前の既定値へフォールバックできるようにする。
+
+    これが必要なのは、配信するページの読み手とプロセス自身のロケールが別物だから
+    である。このプロキシは通常systemdユーザーサービスとして動作し、その環境の
+    ``LANG`` は利用者本人のロケールと無関係に ``C.UTF-8`` になる。ブラウザ向けの
+    表示では、ブラウザ自身が要求する言語の方が信頼できる。
+    """
+    if not accept_language:
+        return None
+
+    # "ja,en-US;q=0.9,en;q=0.8" のように、品質値付きの優先順リストで届く。
+    # 品質値が同じ場合は記述順を優先するため、添字を第2キーにする。
+    # The header is a priority list with quality values, e.g.
+    # "ja,en-US;q=0.9,en;q=0.8". Ties fall back to the written order, hence
+    # the index as the secondary key.
+    candidates: list[tuple[float, int, str]] = []
+    for index, part in enumerate(accept_language.split(",")):
+        tag, _, params = part.strip().partition(";")
+        if not tag:
+            continue
+        quality = 1.0
+        for param in params.split(";"):
+            key, _, value = param.partition("=")
+            if key.strip().lower() == "q":
+                try:
+                    quality = float(value)
+                except ValueError:
+                    # 壊れた品質値は「指定なし」ではなく「最低」として扱う。
+                    # A malformed quality means lowest, not unspecified.
+                    quality = 0.0
+        if quality > 0:
+            candidates.append((-quality, index, tag))
+
+    for _, _, tag in sorted(candidates):
+        language = _normalize(tag)
+        if language is not None:
+            return language
+    return None
+
+
 def detect_language(env: Mapping[str, str] | None = None) -> str:
     """Resolve the display language from environment variables.
 
