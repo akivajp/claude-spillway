@@ -1,6 +1,6 @@
 [project]
 name = "claude-spillway"
-version = "0.3.0"
+version = "0.3.1"
 description = "Quota-aware failover proxy for Claude Code: spills over from Anthropic to Ollama Cloud when your quota runs low, and switches back once it recovers."
 readme = "README.md"
 authors = [
