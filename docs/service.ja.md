@@ -65,8 +65,11 @@ systemctl --user restart claude-spillway     # 再起動
 systemctl --user stop claude-spillway        # 停止
 journalctl --user -u claude-spillway -f      # ログ追跡
 claude-spillway monitor                      # TUIで残量を監視
-claude-spillway dashboard                    # ブラウザで残量を監視
 ```
+
+`monitor` の画面には、プロキシが配信するブラウザ用ダッシュボードのURL
+(<http://127.0.0.1:8787/_spillway/>) も表示されます。同じ数値を、リセットまでの
+カウントダウンや切替閾値の目盛りとあわせて確認できます。
 
 ## 更新
 

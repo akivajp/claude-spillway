@@ -24,9 +24,13 @@ def _reset_language() -> Iterator[None]:
     i18n.set_language(None)
 
 
-def _render_to_text(data: dict, url: str = "http://127.0.0.1:8787/_spillway/status", error: str | None = None) -> str:
+_STATUS_URL = "http://127.0.0.1:8787/_spillway/status"
+_DASHBOARD_URL = "http://127.0.0.1:8787/_spillway/"
+
+
+def _render_to_text(data: dict, url: str = _STATUS_URL, error: str | None = None) -> str:
     console = Console(record=True, width=100)
-    console.print(_build_renderable(data, url, error))
+    console.print(_build_renderable(data, url, _DASHBOARD_URL, error))
     return console.export_text()
 
 
@@ -96,3 +100,26 @@ def test_defaults_to_english_outside_japanese_locale(monkeypatch: pytest.MonkeyP
     text = _render_to_text(_WAITING_DATA)
     assert "Waiting" in text
     assert "待機中" not in text
+
+
+@pytest.mark.parametrize("data", [_WAITING_DATA, _OBSERVED_DATA])
+def test_header_always_shows_the_dashboard_url(data: dict) -> None:
+    """The browser view is only discoverable from here, so it must always show.
+
+    The header is the one place that renders in every state, including the
+    waiting one - which is exactly when someone is most likely to go looking
+    for another way to see what is going on.
+
+    ブラウザ表示への入口はここにしかないため、常に表示されること。
+    ヘッダーは待機中を含むすべての状態で描画される唯一の箇所であり、
+    別の見方を探したくなるのはまさに待機中だからである。
+    """
+    assert _DASHBOARD_URL in _render_to_text(data)
+
+
+def test_header_shows_the_dashboard_url_while_unreachable() -> None:
+    """Even with the proxy down, the URL stays visible for when it comes back.
+
+    プロキシが落ちている間も、復帰後に使えるようURLは出したままにする。
+    """
+    assert _DASHBOARD_URL in _render_to_text({}, error="connection refused")

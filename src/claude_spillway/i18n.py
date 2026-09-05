@@ -117,26 +117,6 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "ja": "warning: ollama.api_key が未設定です。フェイルオーバー時のリクエストは失敗します。",
     },
     # --- monitor TUI -------------------------------------------------------
-    "cli.dashboard.help": {
-        "en": "Open the browser dashboard of a running proxy",
-        "ja": "稼働中プロキシのブラウザ用ダッシュボードを開く",
-    },
-    "cli.dashboard.host": {
-        "en": "Host of the running proxy",
-        "ja": "稼働中プロキシのホスト",
-    },
-    "cli.dashboard.port": {
-        "en": "Port of the running proxy",
-        "ja": "稼働中プロキシのポート",
-    },
-    "cli.dashboard.no_open": {
-        "en": "Only print the URL; do not open a browser",
-        "ja": "URLを表示するだけでブラウザを開かない",
-    },
-    "cli.dashboard.open_failed": {
-        "en": "Could not open a browser; open the URL above yourself.",
-        "ja": "ブラウザを開けませんでした。上のURLを手動で開いてください。",
-    },
     "monitor.error.title": {
         "en": "Connection error",
         "ja": "接続エラー",

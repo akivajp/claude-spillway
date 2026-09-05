@@ -76,8 +76,11 @@ systemctl --user restart claude-spillway     # restart
 systemctl --user stop claude-spillway        # stop
 journalctl --user -u claude-spillway -f      # follow the logs
 claude-spillway monitor                      # watch quota in a TUI
-claude-spillway dashboard                    # watch quota in a browser
 ```
+
+`monitor` also prints the address of the browser dashboard the proxy serves
+(<http://127.0.0.1:8787/_spillway/>), which shows the same figures with reset
+countdowns and threshold markers.
 
 ## Upgrading
 

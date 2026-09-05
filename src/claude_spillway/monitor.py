@@ -83,7 +83,7 @@ def _fmt_estimated_reset(ts: float | None) -> str:
     return f"~{_fmt_reset(ts)}"
 
 
-def _build_renderable(data: dict, url: str, error: str | None) -> Group:
+def _build_renderable(data: dict, url: str, dashboard_url: str, error: str | None) -> Group:
     mode = data.get("mode", "unknown")
     mode_label = {
         "anthropic": "[bold green]ANTHROPIC[/bold green]",
@@ -103,9 +103,18 @@ def _build_renderable(data: dict, url: str, error: str | None) -> Group:
         (v for v in (anthropic.get("observed_at"), ollama.get("observed_at")) if v), default=None
     ) if (anthropic := data.get("anthropic", {}), ollama := data.get("ollama", {})) else None
     updated = _fmt_time(observed) if observed else datetime.now(tz=UTC).astimezone().strftime("%H:%M:%S")
+    # ダッシュボードのURLはここにしか出さない。monitor を開いている時点で
+    # 状態を見たい意図は明らかであり、専用のサブコマンドを別に覚えるより、
+    # 目の前に出ている方が見つかる。rich のリンク記法により、対応端末では
+    # そのままクリックで開ける。
+    # The dashboard URL is surfaced only here: someone running monitor already
+    # wants to see the state, so the address belongs in front of them rather
+    # than behind a separate subcommand to remember. Rich's link markup makes
+    # it clickable on terminals that support it.
     header = Panel(
         f"backend  : {mode_label}\n"
         f"endpoint : {url}\n"
+        f"dashboard: [link={dashboard_url}]{dashboard_url}[/link]\n"
         f"updated  : {updated}"
         f"{source_line}",
         title="claude-spillway monitor",
@@ -246,6 +255,9 @@ def run_monitor(host: str, port: int, interval: float) -> None:
     statusの内容が前回と異なるときだけフレームを描き直す。
     """
     url = f"http://{host}:{port}/_spillway/status"
+    # 同じプロキシが配信するブラウザ用ダッシュボード。表示のみで、取得はしない。
+    # The browser dashboard the same proxy serves; shown, never fetched.
+    dashboard_url = f"http://{host}:{port}/_spillway/"
     console = Console()
     client = httpx.Client(timeout=5.0)
     # 直近フレームの指紋。statusのJSONとエラー文言が同一なら再描画しない。
@@ -276,7 +288,7 @@ def run_monitor(host: str, port: int, interval: float) -> None:
                 frame = (json.dumps(stable, sort_keys=True), error)
                 if frame != last_frame:
                     last_frame = frame
-                    live.update(_build_renderable(data, url, error), refresh=True)
+                    live.update(_build_renderable(data, url, dashboard_url, error), refresh=True)
                 time.sleep(interval)
     except KeyboardInterrupt:
         pass
