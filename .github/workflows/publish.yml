@@ -1,0 +1,47 @@
+# タグ(v*)のpushでPyPIへ公開する。
+# Publish to PyPI when a v* tag is pushed.
+#
+# 認証はPyPIのTrusted Publishing (OIDC)を使うため、APIトークンをsecretsに
+# 置く必要はない。事前にPyPI側で以下を登録しておくこと:
+#   https://pypi.org/manage/account/publishing/
+#     Owner: akivajp / Repository: claude-spillway
+#     Workflow: publish.yml / Environment: pypi
+#
+# Authentication uses PyPI Trusted Publishing (OIDC), so no API token is stored
+# in secrets. Register the publisher on PyPI first, with the values above.
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # OIDCトークンの発行に必要 / required to mint the OIDC token
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      # 公開してから壊れていたと気づいても取り消せないため、公開前に必ず通す
+      # A release cannot be unpublished, so gate it on the same checks as CI
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Test (pytest)
+        run: uv run pytest -v
+
+      - name: Build
+        run: uv build
+
+      - name: Publish to PyPI
+        run: uv publish --trusted-publishing always

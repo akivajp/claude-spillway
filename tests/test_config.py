@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -27,15 +28,38 @@ def _clear_config_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(CONFIG_ENV_VAR, raising=False)
 
 
+def _point_user_config_dir_at(monkeypatch: pytest.MonkeyPatch, root: Path) -> Path:
+    """Aim :func:`user_config_dir` at ``root`` on whichever OS we run on.
+
+    The lookup reads ``%APPDATA%`` on Windows and ``$XDG_CONFIG_HOME`` elsewhere,
+    so set both and let the platform pick.
+
+    実行OSに関わらず :func:`user_config_dir` が ``root`` を指すようにする。
+    探索はWindowsでは ``%APPDATA%``、それ以外では ``$XDG_CONFIG_HOME`` を見るため、
+    両方を設定してプラットフォーム側に選ばせる。
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(root))
+    monkeypatch.setenv("APPDATA", str(root))
+    return root / "claude-spillway"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="XDG paths are POSIX-only / XDGはPOSIX専用")
 def test_user_config_dir_follows_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     assert user_config_dir() == tmp_path / "claude-spillway"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="XDG paths are POSIX-only / XDGはPOSIX専用")
 def test_user_config_dir_defaults_to_dot_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     assert user_config_dir() == tmp_path / ".config" / "claude-spillway"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="APPDATA is Windows-only / APPDATAはWindows専用")
+def test_user_config_dir_uses_appdata_on_windows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    assert user_config_dir() == tmp_path / "claude-spillway"
 
 
 def test_explicit_path_always_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -54,17 +78,16 @@ def test_env_var_is_searched_before_user_dir(tmp_path: Path, monkeypatch: pytest
     from_env = tmp_path / "from-env.yaml"
     from_env.write_text("log_level: DEBUG\n", encoding="utf-8")
     monkeypatch.setenv(CONFIG_ENV_VAR, str(from_env))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    user_dir = _point_user_config_dir_at(monkeypatch, tmp_path / "user")
 
     candidates = default_config_candidates()
     assert candidates[0] == from_env
-    assert candidates[-1] == tmp_path / "xdg" / "claude-spillway" / "config.yaml"
+    assert candidates[-1] == user_dir / "config.yaml"
     assert resolve_config_path(None) == from_env
 
 
 def test_falls_back_to_user_config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    config = tmp_path / "claude-spillway" / "config.yaml"
+    config = _point_user_config_dir_at(monkeypatch, tmp_path) / "config.yaml"
     config.parent.mkdir(parents=True)
     config.write_text("log_level: WARNING\n", encoding="utf-8")
 
@@ -73,7 +96,7 @@ def test_falls_back_to_user_config_dir(tmp_path: Path, monkeypatch: pytest.Monke
 
 
 def test_returns_none_when_nothing_is_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
+    _point_user_config_dir_at(monkeypatch, tmp_path / "empty")
     assert resolve_config_path(None) is None
     # None は「デフォルト値のみで動く」を意味し、エラーではない。
     # None means "run on defaults alone" and is not an error.

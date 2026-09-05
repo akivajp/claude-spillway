@@ -1,6 +1,6 @@
 # claude-spillway
 
-[日本語版 README はこちら](README.ja.md)
+[日本語版 README はこちら](https://github.com/akivajp/claude-spillway/blob/main/README.ja.md)
 
 A quota-aware failover proxy for [Claude Code](https://claude.com/claude-code).
 
@@ -117,16 +117,16 @@ uv sync
 
 You can try the whole flow without any real credentials using the bundled
 fake upstream servers — see
-[`scripts/manual_smoketest/`](scripts/manual_smoketest/).
+[`scripts/manual_smoketest/`](https://github.com/akivajp/claude-spillway/tree/main/scripts/manual_smoketest).
 
 Running on Windows with WSL2? See
-[docs/wsl-windows.md](docs/wsl-windows.md) for keeping the proxy resident as a
+[docs/wsl-windows.md](https://github.com/akivajp/claude-spillway/blob/main/docs/wsl-windows.md) for keeping the proxy resident as a
 systemd user service and wiring up both the Windows and the WSL Claude Code
 extension.
 
 ## Configuration
 
-See [`config.example.yaml`](config.example.yaml) for the full reference.
+See [`config.example.yaml`](https://github.com/akivajp/claude-spillway/blob/main/config.example.yaml) for the full reference.
 
 When `-c` is omitted, the config file is looked up in this order:
 
@@ -193,4 +193,4 @@ If claude-spillway saves you from hitting a rate limit mid-session, you can
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/akivajp/claude-spillway/blob/main/LICENSE)
