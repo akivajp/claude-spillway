@@ -176,7 +176,7 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
         if not is_failover_target or tracker.mode is BackendMode.ANTHROPIC:
             recovery_probe.capture_auth_headers(header_map)
             response, snapshot = await backends.forward_to_anthropic(request, body)
-            if is_failover_target and snapshot is not None:
+            if is_failover_target:
                 previous_mode = tracker.mode
                 new_mode = tracker.observe(snapshot)
                 if new_mode is not previous_mode:
@@ -188,6 +188,21 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
                         new_mode.value,
                     )
                     recovery_probe.start()
+                # A 429 carries no utilization headers, so the observe() above
+                # learned nothing. Record the rejection itself, or the proxy
+                # stays parked on a backend that refuses every request.
+                # 429には使用率ヘッダーが載らないため、上のobserve()では何も学べない。
+                # 拒否そのものを記録しないと、全リクエストを拒否し続けるバックエンドに
+                # 留まり続けてしまう。
+                if response.status_code == 429:
+                    new_mode = tracker.note_anthropic_rate_limited()
+                    if new_mode is not previous_mode:
+                        logger.warning(
+                            "anthropic returned 429; switching backend %s -> %s",
+                            previous_mode.value,
+                            new_mode.value,
+                        )
+                        recovery_probe.start()
             return to_streaming_response(response)
 
         # Reached only when this is the failover target AND we are in FALLBACK.

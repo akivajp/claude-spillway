@@ -514,6 +514,15 @@ class QuotaTracker:
         #: Ollama is off-limits until this time, after a burst of failures.
         #: 連続失敗を受けて、この時刻まではOllamaを使わない。
         self._ollama_blocked_until: float = 0.0
+        #: True while the latest Anthropic fact is a 429. Rate-limit rejections
+        #: carry no utilization headers, so without this flag "no data" would
+        #: keep the proxy parked on a backend that refuses every request. The
+        #: flag stands in for a reading until one with real numbers arrives.
+        #: 直近のAnthropic側の事実が429である間立つフラグ。レート制限の拒否応答に
+        #: は使用率ヘッダーが載らないため、このフラグが無いと「データなし」のまま
+        #: 全リクエストを拒否し続けるバックエンドに留まってしまう。実数値の観測が
+        #: 届くまでの代用として機能する。
+        self._anthropic_rate_limited: bool = False
 
     @property
     def policy(self) -> RoutingPolicy:
@@ -522,9 +531,19 @@ class QuotaTracker:
     def observe(self, snapshot: QuotaSnapshot) -> BackendMode:
         """Take in a new Anthropic reading and re-decide the backend.
 
+        A reading with actual numbers outranks a 429: it is newer evidence
+        about the same window, so the rate-limit flag retires once one shows
+        up. Header-less snapshots (a relayed 429, a failed probe) leave the
+        flag alone - they say nothing either way.
+
         新しいAnthropicの観測値を取り込み、バックエンドを再判定する。
+        実数値のある観測は429より新しい証拠であるため、実数値が届いた時点で
+        レート制限フラグは役目を終える。ヘッダーの無い観測(中継された429、
+        失敗したプローブ)はどちらとも言えないため、フラグには触れない。
         """
         self.last_snapshot = snapshot
+        if snapshot.remaining_ratio() is not None:
+            self._anthropic_rate_limited = False
         return self._reevaluate()
 
     def observe_ollama(self, snapshot: OllamaSnapshot) -> BackendMode:
@@ -533,6 +552,23 @@ class QuotaTracker:
         新しいOllamaの観測値を取り込み、バックエンドを再判定する。
         """
         self.ollama_snapshot = snapshot
+        return self._reevaluate()
+
+    def note_anthropic_rate_limited(self) -> BackendMode:
+        """Record that Anthropic answered 429, then re-decide the backend.
+
+        A 429 means one of Anthropic's windows is spent, so the traffic has
+        somewhere better to go - but only if Ollama can take it, which the
+        re-evaluation below decides. Until a reading with real numbers lands,
+        the flagged state counts Anthropic as having nothing left.
+
+        Anthropicが429を返したことを記録し、バックエンドを再判定する。
+        429はいずれかの窓が使い切ったことを意味するため、行き先があるなら
+        そちらへ移るべきだが、移れるかどうかはOllama側の残量次第であり、
+        その判定は下の再評価に委ねる。実数値の観測が届くまで、Anthropicは
+        残量0として扱う。
+        """
+        self._anthropic_rate_limited = True
         return self._reevaluate()
 
     def note_ollama_failures(self, consecutive_failures: int) -> BackendMode:
@@ -550,7 +586,11 @@ class QuotaTracker:
         """
         if consecutive_failures < self._ollama_failure_threshold:
             return self.mode
-        remaining_5h = self._anthropic_window(anthropic_5h=True)
+        # 直近のAnthropic側の事実が429なら、古い5時間窓の読み値は信用できない。
+        # If the latest Anthropic fact is a 429, the stale 5h reading is moot.
+        remaining_5h = (
+            None if self._anthropic_rate_limited else self._anthropic_window(anthropic_5h=True)
+        )
         if remaining_5h is None or remaining_5h < self._reverse_min_5h:
             # Nowhere better to go; staying put beats thrashing.
             # 逃げ先が無いため、無理に切り替えず現状を維持する。
@@ -569,17 +609,31 @@ class QuotaTracker:
         ollama_remaining = (
             self.ollama_snapshot.remaining_ratio() if self.ollama_snapshot is not None else None
         )
+        anthropic_remaining = (
+            self.last_snapshot.remaining_ratio() if self.last_snapshot is not None else None
+        )
+        if self._anthropic_rate_limited:
+            # 429は実測ヘッダーより新しい「枯渇」の証拠。実数値が届くまで残0扱い。
+            # A 429 is newer exhaustion evidence than any header reading; count
+            # Anthropic as empty until one with real numbers lands.
+            anthropic_remaining = 0.0
 
         # 1. Guards that rule Ollama out entirely.
         #    Ollamaを使えなくする条件(最優先)。
         if now < self._ollama_blocked_until:
             return self._ensure(BackendMode.ANTHROPIC, "ollama_cooldown")
         if ollama_remaining is not None and ollama_remaining < self._ollama_min_remaining:
-            return self._ensure(BackendMode.ANTHROPIC, "ollama_exhausted")
+            # Below Ollama's floor, but stand down only while Anthropic reads
+            # and holds strictly more. When Anthropic is itself exhausted (or
+            # unreadable) its last drops are worthless, so spending Ollama's
+            # remaining few percent beats relaying into guaranteed rejections.
+            # Ollamaが下限を下回っても、Anthropicが読めてかつより余裕がある場合に
+            # 限って使用を断念する。Anthropic自身が枯渇(または読めない)場合、
+            # そちらに送り続けるのは確実な拒否であって、Ollamaの残り数%を使う
+            # 方がまだましである。
+            if anthropic_remaining is not None and anthropic_remaining > ollama_remaining:
+                return self._ensure(BackendMode.ANTHROPIC, "ollama_exhausted")
 
-        anthropic_remaining = (
-            self.last_snapshot.remaining_ratio() if self.last_snapshot is not None else None
-        )
         if anthropic_remaining is None:
             # Nothing observed yet; keep whatever we are doing.
             # まだ何も観測できていないため現状維持。
@@ -588,7 +642,10 @@ class QuotaTracker:
         # 2. Hard guard: Anthropic is critically low, so fail over regardless of policy.
         #    ハードガード: Anthropicが逼迫しているため、ポリシーに関係なく切り替える。
         if anthropic_remaining < self._fallback_threshold:
-            return self._ensure(BackendMode.FALLBACK, "anthropic_low")
+            reason = (
+                "anthropic_rate_limited" if self._anthropic_rate_limited else "anthropic_low"
+            )
+            return self._ensure(BackendMode.FALLBACK, reason)
 
         # 3. Policy, applied only while neither side is critical.
         #    ポリシー適用(どちらも逼迫していない場合のみ)。

@@ -112,6 +112,61 @@ async def test_failover_then_recovery(settings: Settings) -> None:
     await backends.aclose()
 
 
+async def test_429_from_anthropic_fails_over_mid_session(settings: Settings) -> None:
+    """Anthropic rejecting with 429 must count as exhaustion, headers or not.
+
+    Anthropicの429には使用率ヘッダーが載らないため、これを枯渇として記録しないと
+    残量取得不能のまま枯渇したAnthropicに留まり続ける。実際に起きた不具合では、
+    Ollama側の残量が閾値未満でもAnthropicが底を突いていればOllamaへ逃がすのが正解。
+    """
+    calls = {"anthropic": 0, "ollama": 0}
+
+    def anthropic_handler(request: httpx.Request) -> httpx.Response:
+        calls["anthropic"] += 1
+        # 実障害と同じく、429応答にはunifiedヘッダーが一切付かない
+        # Like the real incident, a 429 carries no unified headers at all
+        return httpx.Response(429, json={"error": {"message": "rate limit exceeded"}})
+
+    def ollama_handler(request: httpx.Request) -> httpx.Response:
+        calls["ollama"] += 1
+        return httpx.Response(
+            200, json={"id": "msg_ollama", "model": "gpt-oss:120b", "content": []}
+        )
+
+    backends = ProxyBackends(
+        settings,
+        anthropic_transport=httpx.MockTransport(anthropic_handler),
+        ollama_transport=httpx.MockTransport(ollama_handler),
+    )
+    app = create_app(settings, backends=backends)
+
+    payload = {
+        "model": "claude-opus-4-20260101",
+        "max_tokens": 10,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    headers = {"x-api-key": "sk-ant-test", "anthropic-version": "2023-06-01"}
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        # 1回目は429のままClaude Codeへ返す(モードはこの応答でFALLBACKへ切替)
+        # The 429 itself is relayed; observing it flips the mode to fallback
+        r1 = await client.post("/v1/messages", json=payload, headers=headers)
+        assert r1.status_code == 429
+        assert app.state.tracker.mode is BackendMode.FALLBACK
+        assert app.state.tracker.last_reason == "anthropic_rate_limited"
+
+        # 2回目(Claude Codeのリトライ相当)はOllamaへ流れる
+        # The second call (Claude Code's retry) goes to Ollama
+        r2 = await client.post("/v1/messages", json=payload, headers=headers)
+        assert r2.status_code == 200
+        assert r2.json()["id"] == "msg_ollama"
+
+    assert calls["anthropic"] == 1
+    assert calls["ollama"] == 1
+    await backends.aclose()
+
+
 async def test_count_tokens_never_routed_to_ollama_even_in_fallback(settings: Settings) -> None:
     calls = {"anthropic": 0, "ollama": 0}
 

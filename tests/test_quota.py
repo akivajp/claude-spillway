@@ -221,6 +221,48 @@ def test_exhausted_ollama_is_never_used_as_a_fallback() -> None:
     assert tracker.last_reason == "ollama_exhausted"
 
 
+def test_below_floor_ollama_is_used_when_anthropic_is_dead() -> None:
+    """Ollama under its floor is still the right answer once Anthropic reads zero.
+
+    Anthropicの5時間窓が底を突き、週次窓だけ残っている状態。Ollamaの残量が
+    ollama_min_remaining_pct(既定5%)を下回っていても、Anthropicが実質枯渇している
+    以上、Ollamaの残りを使う方がまだましである。実際に起きた不具合の再現ケース。
+    """
+    tracker = QuotaTracker(fallback_threshold_pct=10.0, recovery_threshold_pct=20.0)
+    # 実障害時の実測値: Ollama残4.7%(min=閾値5%未満)、Anthropicは5h使い切りで残0
+    # The real incident's numbers: Ollama at 4.7% (under the 5% floor),
+    # Anthropic with its 5h window at exactly zero.
+    tracker.observe_ollama(_ollama(session=0.741, weekly=0.953))
+    assert tracker.observe(_anthropic(1.0, 0.822)) is BackendMode.FALLBACK
+    assert tracker.last_reason == "anthropic_low"
+
+
+def test_rate_limited_anthropic_fails_over_until_real_numbers_arrive() -> None:
+    """A 429 counts as exhaustion even though it carries no headers.
+
+    429には使用率ヘッダーが載らないため、これを記録しないと「データなし」のまま
+    枯渇したAnthropicに留まり続ける。記録したらフォールバックし、実数値の観測が
+    届いた時点でフラグは解けること。
+    """
+    tracker = QuotaTracker(fallback_threshold_pct=10.0, recovery_threshold_pct=20.0)
+    tracker.observe_ollama(_ollama(session=0.1, weekly=0.2))
+
+    # Anthropicの観測が一切無くても、429は枯渇の証拠として扱う
+    # A 429 is exhaustion evidence even with no Anthropic reading at all
+    assert tracker.note_anthropic_rate_limited() is BackendMode.FALLBACK
+    assert tracker.last_reason == "anthropic_rate_limited"
+
+    # ヘッダー無しの観測(中継された429の解釈結果)ではフォールバックを維持する
+    # A header-less snapshot says nothing, so fallback stands
+    tracker.observe(parse_quota_headers(httpx.Headers()))
+    assert tracker.mode is BackendMode.FALLBACK
+
+    # 実数値が届いたらフラグは解け、通常のヒステリシスで切り戻る
+    # Real numbers retire the flag, and ordinary hysteresis switches back
+    assert tracker.observe(_anthropic(0.5, 0.2)) is BackendMode.ANTHROPIC
+    assert tracker.last_reason == "anthropic_recovered"
+
+
 def test_weekly_balance_prefers_the_side_with_more_weekly_left() -> None:
     tracker = QuotaTracker(
         fallback_threshold_pct=10.0,
