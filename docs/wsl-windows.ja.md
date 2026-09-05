@@ -46,71 +46,24 @@ systemd=true
 
 `networkingMode=mirrored`（Windows 11のみ）は**不要**です。既定のNATモードで動作します。
 
-## 1. インストール
+## 1. インストールとサービス登録
 
 ```bash
 # uv が未導入なら
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 固定パス (~/.local/bin/claude-spillway) にインストール
+# 本体を導入
 uv tool install claude-spillway
-# 開発中のリポジトリをそのまま使う場合:
-#   uv tool install --editable ~/git/claude-spillway
+
+# サービスとして登録(設定ファイル配置・APIキー保存・自動起動まで一括)
+git clone https://github.com/akivajp/claude-spillway.git
+cd claude-spillway
+./scripts/install-service.sh
 ```
 
-## 2. 設定ファイルとAPIキー
+スクリプトが何を設定するか、更新・削除の手順、トラブルシューティングは [service.ja.md](service.ja.md) にまとめています。ここから先は、WSL2 + Windows 環境に固有の話だけを扱います。
 
-`-c` を省略した場合、claude-spillway は次の順で設定ファイルを探索します。
-
-1. 環境変数 `CLAUDE_SPILLWAY_CONFIG` が指すパス
-2. `~/.config/claude-spillway/config.yaml`（`$XDG_CONFIG_HOME` を尊重。Windowsでは `%APPDATA%\claude-spillway\config.yaml`）
-
-サービス定義を短く保てるので、標準の場所に置くことを推奨します。
-
-```bash
-mkdir -p ~/.config/claude-spillway
-curl -o ~/.config/claude-spillway/config.yaml \
-  https://raw.githubusercontent.com/akivajp/claude-spillway/main/config.example.yaml
-
-# APIキーは設定ファイルに直書きせず、環境変数ファイルに分離する
-echo 'OLLAMA_API_KEY=あなたのキー' > ~/.config/claude-spillway/env
-chmod 600 ~/.config/claude-spillway/env
-```
-
-`config.yaml` 側は `api_key: ${OLLAMA_API_KEY}` のままにしておきます（`${...}` はプロセス環境変数で展開されます）。
-
-## 3. systemd ユーザーサービスとして常駐させる
-
-`~/.config/systemd/user/claude-spillway.service` を作成します。
-
-```ini
-[Unit]
-Description=claude-spillway: quota-aware failover proxy for Claude Code
-Documentation=https://github.com/akivajp/claude-spillway
-After=network-online.target
-
-[Service]
-Type=simple
-EnvironmentFile=%h/.config/claude-spillway/env
-ExecStart=%h/.local/bin/claude-spillway serve
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=claude-spillway
-
-[Install]
-WantedBy=default.target
-```
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now claude-spillway
-systemctl --user status claude-spillway
-journalctl --user -u claude-spillway -f    # ログ追跡
-```
-
-`Restart=always` は必須級です。`ANTHROPIC_BASE_URL` を設定した状態でプロキシが停止すると、**すべてのClaude Codeセッションが接続不能**になるためです。
+`Restart=always` を入れているのは必須級の理由からです。`ANTHROPIC_BASE_URL` を設定した状態でプロキシが停止すると、**すべてのClaude Codeセッションが接続不能**になります。
 
 ### なぜ cron (`@reboot`) を勧めないのか
 
@@ -133,7 +86,7 @@ Register-ScheduledTask -TaskName "wsl-boot" -Action $action -Trigger $trigger `
 
 VSCodeでRemote-WSLを使う運用であれば、接続時にディストロが起動するのでこのタスクは不要です。
 
-## 4. Claude Code に接続先を教える
+## 2. Claude Code に接続先を教える
 
 **OS環境変数（`setx`）を設定する必要はありません。** `settings.json` の `env` キーを使います。シェルの環境変数より優先され、1行の編集で切り戻せます。
 
@@ -205,7 +158,7 @@ curl -s https://ollama.com/v1/messages \
 
 > 既知のリスク: Ollama Cloudは非常に大きなリクエスト（18KB超のシステムプロンプト、20個超のツール）で500エラーを返すという報告があります（[ollama/ollama#13949](https://github.com/ollama/ollama/issues/13949) 周辺）。MCPを多用する構成でフォールバックが失敗する場合は、`monitor` の「直近エラー」欄を確認してください。
 
-## 5. 動作確認
+## 3. 動作確認
 
 ```bash
 # WSL内から

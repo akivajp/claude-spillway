@@ -197,10 +197,19 @@ You can try the whole flow without any real credentials using the bundled
 fake upstream servers — see
 [`scripts/manual_smoketest/`](https://github.com/akivajp/claude-spillway/tree/main/scripts/manual_smoketest).
 
+To keep it running in the background instead of starting it by hand, install it
+as a systemd user service — one script does the whole thing:
+
+```bash
+./scripts/install-service.sh
+```
+
+See [docs/service.md](https://github.com/akivajp/claude-spillway/blob/main/docs/service.md)
+for what it sets up, and how to upgrade or remove it.
+
 Running on Windows with WSL2? See
-[docs/wsl-windows.md](https://github.com/akivajp/claude-spillway/blob/main/docs/wsl-windows.md) for keeping the proxy resident as a
-systemd user service and wiring up both the Windows and the WSL Claude Code
-extension.
+[docs/wsl-windows.md](https://github.com/akivajp/claude-spillway/blob/main/docs/wsl-windows.md)
+for wiring up both the Windows-side and the WSL-side Claude Code extension.
 
 ## Configuration
 

@@ -51,74 +51,28 @@ systemd=true
 `networkingMode=mirrored` (Windows 11 only) is **not** required; the default NAT
 mode works.
 
-## 1. Install
+## 1. Install and register the service
 
 ```bash
 # if you don't have uv yet
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# install to a stable path (~/.local/bin/claude-spillway)
+# install the tool
 uv tool install claude-spillway
-# to run a local checkout instead:
-#   uv tool install --editable ~/git/claude-spillway
+
+# register it as a service: config, API key, autostart, all in one
+git clone https://github.com/akivajp/claude-spillway.git
+cd claude-spillway
+./scripts/install-service.sh
 ```
 
-## 2. Config file and API key
+What the script sets up, plus upgrading, removal and troubleshooting, is in
+[service.md](service.md). From here on this document covers only what is
+specific to WSL2 and Windows.
 
-When `-c` is omitted, claude-spillway looks for a config file in this order:
-
-1. the path in the `CLAUDE_SPILLWAY_CONFIG` environment variable
-2. `~/.config/claude-spillway/config.yaml` (honours `$XDG_CONFIG_HOME`; on
-   Windows, `%APPDATA%\claude-spillway\config.yaml`)
-
-Using the standard location keeps the service unit short.
-
-```bash
-mkdir -p ~/.config/claude-spillway
-curl -o ~/.config/claude-spillway/config.yaml \
-  https://raw.githubusercontent.com/akivajp/claude-spillway/main/config.example.yaml
-
-# keep the API key out of the config file
-echo 'OLLAMA_API_KEY=your-ollama-cloud-api-key' > ~/.config/claude-spillway/env
-chmod 600 ~/.config/claude-spillway/env
-```
-
-Leave `api_key: ${OLLAMA_API_KEY}` as-is in `config.yaml`; `${...}` is expanded
-from the process environment.
-
-## 3. Keep it running as a systemd user service
-
-Create `~/.config/systemd/user/claude-spillway.service`:
-
-```ini
-[Unit]
-Description=claude-spillway: quota-aware failover proxy for Claude Code
-Documentation=https://github.com/akivajp/claude-spillway
-After=network-online.target
-
-[Service]
-Type=simple
-EnvironmentFile=%h/.config/claude-spillway/env
-ExecStart=%h/.local/bin/claude-spillway serve
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=claude-spillway
-
-[Install]
-WantedBy=default.target
-```
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now claude-spillway
-systemctl --user status claude-spillway
-journalctl --user -u claude-spillway -f    # follow the logs
-```
-
-`Restart=always` is close to mandatory: while `ANTHROPIC_BASE_URL` points at the
-proxy, **every Claude Code session loses connectivity if the proxy is down**.
+The unit sets `Restart=always` for a reason close to mandatory: while
+`ANTHROPIC_BASE_URL` points at the proxy, **every Claude Code session loses
+connectivity if it goes down**.
 
 ### Why not cron (`@reboot`)?
 
@@ -148,7 +102,7 @@ Register-ScheduledTask -TaskName "wsl-boot" -Action $action -Trigger $trigger `
 If you always work through Remote-WSL, the distro boots on connect and this task
 is unnecessary.
 
-## 4. Point Claude Code at the proxy
+## 2. Point Claude Code at the proxy
 
 **You do not need to set an OS environment variable (`setx`).** Use the `env`
 key in `settings.json`: it takes precedence over shell environment variables and
@@ -242,7 +196,7 @@ workloads; `config.example.yaml` notes the context length of each mapped model.
 > requests (18KB+ system prompts, 20+ tools). If failover fails on an
 > MCP-heavy setup, check the "last error" row in `claude-spillway monitor`.
 
-## 5. Verify
+## 3. Verify
 
 ```bash
 # from inside WSL

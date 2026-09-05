@@ -120,7 +120,15 @@ uv sync
 
 実際の資格情報を使わずに一連の流れを試したい場合は、同梱のダミーサーバーが使えます。[`scripts/manual_smoketest/`](scripts/manual_smoketest/)を参照してください。
 
-Windows + WSL2環境で使う場合は、[docs/wsl-windows.ja.md](docs/wsl-windows.ja.md) にsystemdユーザーサービスとしての常駐手順と、Windows側・WSL側両方のClaude Code拡張への設定方法をまとめています。
+毎回手で起動する代わりに、systemdユーザーサービスとして常駐させることもできます。スクリプト1つで完結します。
+
+```bash
+./scripts/install-service.sh
+```
+
+何が設定されるか、更新・削除の手順は [docs/service.ja.md](docs/service.ja.md) を参照してください。
+
+Windows + WSL2環境で使う場合は、[docs/wsl-windows.ja.md](docs/wsl-windows.ja.md) にWindows側・WSL側両方のClaude Code拡張への設定方法をまとめています。
 
 ## 設定
 

@@ -1,0 +1,26 @@
+[Unit]
+# claude-spillway: Claude Code用のquota連動フェイルオーバープロキシ
+# claude-spillway: quota-aware failover proxy for Claude Code
+Description=claude-spillway: quota-aware failover proxy for Claude Code
+Documentation=https://github.com/akivajp/claude-spillway
+After=network-online.target
+
+[Service]
+Type=simple
+# OLLAMA_API_KEY をここから読み込む(設定ファイルに直書きしない)
+# Load OLLAMA_API_KEY from here instead of hardcoding it in the config file
+EnvironmentFile=%h/.config/claude-spillway/env
+# 設定ファイルは ~/.config/claude-spillway/config.yaml が自動探索される
+# The config file at ~/.config/claude-spillway/config.yaml is discovered automatically
+ExecStart=%h/.local/bin/claude-spillway serve
+# 落ちても必ず復帰させる(停止するとClaude Code全体が接続不能になるため)
+# Always restart: while it is down, every Claude Code session loses connectivity
+Restart=always
+RestartSec=5
+# ログはjournaldへ / logs go to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=claude-spillway
+
+[Install]
+WantedBy=default.target
