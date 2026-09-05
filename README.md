@@ -184,6 +184,13 @@ don't touch real Anthropic/Ollama quota.
 Early-stage, built for personal use and shared in case it's useful to
 others. Not affiliated with Anthropic or Ollama.
 
+## Support
+
+If claude-spillway saves you from hitting a rate limit mid-session, you can
+[buy me a coffee](https://buymeacoffee.com/akivajp).
+
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=flat-square&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/akivajp)
+
 ## License
 
 [MIT](LICENSE)

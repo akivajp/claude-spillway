@@ -127,6 +127,13 @@ uv run ruff check .  # lint
 
 まだ初期段階のプロジェクトです。個人利用のために作り、他の人にも役立つかもしれないと考えて公開しています。AnthropicおよびOllamaとは無関係の非公式プロジェクトです。
 
+## 支援
+
+claude-spillwayがレート制限による中断を防ぐのに役立ったら、
+[コーヒーをおごって](https://buymeacoffee.com/akivajp)いただけると嬉しいです。
+
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=flat-square&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/akivajp)
+
 ## ライセンス
 
 [MIT](LICENSE)
