@@ -202,6 +202,23 @@ def _parse_float(headers: httpx.Headers, name: str) -> float | None:
         return None
 
 
+def _clamped_ratio(value: float) -> float:
+    """Pin a utilization reading into 0..1.
+
+    Anthropic reports utilization above 1.0 when a window is overdrawn — the
+    source of the "-12% remaining" the TUI showed. There is nothing left in a
+    window like that, so clamping to exactly 1.0 (i.e. 0 remaining) both fixes
+    the display and makes the ordinary threshold logic treat it as exhausted,
+    which it is.
+
+    利用率を0〜1に収める。窓が枠超過した場合、Anthropicは1.0超の値を返す
+    (TUIに表示されていた「残量-12%」の原因)。こうした窓には残量が無いため、
+    厳密に1.0(=残量0)へクランプすることで表示が直るだけでなく、通常の閾値判定が
+    その窓を枯渇扱いにする。実際に枯渇しているのだから、それが正しい。
+    """
+    return max(0.0, min(1.0, value))
+
+
 def _parse_remaining_ratio(
     headers: httpx.Headers, remaining_name: str, limit_name: str
 ) -> float | None:
@@ -209,7 +226,9 @@ def _parse_remaining_ratio(
     limit = _parse_float(headers, limit_name)
     if remaining is None or limit is None or limit <= 0:
         return None
-    return remaining / limit
+    # remaining/limit は0超になりうる(枠超過)ためクランプする。
+    # The ratio can exceed 1 when a window is overdrawn, so clamp it.
+    return _clamped_ratio(remaining / limit)
 
 
 def parse_quota_headers(headers: httpx.Headers) -> QuotaSnapshot:
@@ -226,8 +245,18 @@ def parse_quota_headers(headers: httpx.Headers) -> QuotaSnapshot:
     それぞれ付与される。両方に対応し、存在するものだけを読み取る。
     """
     return QuotaSnapshot(
-        utilization_5h=_parse_float(headers, "anthropic-ratelimit-unified-5h-utilization"),
-        utilization_7d=_parse_float(headers, "anthropic-ratelimit-unified-7d-utilization"),
+        # 利用率ヘッダーは枠超過で1.0を超えてくるため、ここでクランプする。
+        # Utilization headers exceed 1.0 when a window is overdrawn; clamp here.
+        utilization_5h=(
+            None
+            if (v := _parse_float(headers, "anthropic-ratelimit-unified-5h-utilization")) is None
+            else _clamped_ratio(v)
+        ),
+        utilization_7d=(
+            None
+            if (v := _parse_float(headers, "anthropic-ratelimit-unified-7d-utilization")) is None
+            else _clamped_ratio(v)
+        ),
         requests_remaining_ratio=_parse_remaining_ratio(
             headers,
             "anthropic-ratelimit-requests-remaining",

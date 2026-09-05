@@ -426,3 +426,61 @@ def test_burn_rate_never_engages_when_a_session_window_is_low() -> None:
     tracker.observe(_anthropic_with_resets(0.3, now + 4 * 3600, 0.1, now + 6 * 86400))
     assert tracker.mode is BackendMode.ANTHROPIC
     assert tracker.last_reason != "burn_rate_balance"
+
+
+def test_overdrawn_utilization_is_clamped_to_exhausted() -> None:
+    """Anthropic reports >1.0 utilization when a window is overdrawn; read it as empty.
+
+    The TUI showed "-12% remaining" for exactly this input before the clamp.
+
+    窓が枠超過するとAnthropicは1.0超の利用率を返す。クランプ前のTUIはまさに
+    この入力に対して「残量-12%」を表示していた。
+    """
+    snapshot = parse_quota_headers(
+        httpx.Headers({"anthropic-ratelimit-unified-5h-utilization": "1.12"})
+    )
+    assert snapshot.utilization_5h == pytest.approx(1.0)
+    assert snapshot.remaining_ratio() == pytest.approx(0.0)
+
+    # 逆側(負の利用率)も同じく0残量扱い / a negative reading reads as empty too
+    snapshot = parse_quota_headers(
+        httpx.Headers({"anthropic-ratelimit-unified-5h-utilization": "-0.05"})
+    )
+    assert snapshot.utilization_5h == pytest.approx(0.0)
+
+
+def test_overdrawn_remaining_ratio_is_clamped() -> None:
+    """API-key billing: remaining can go negative once the limit is hit.
+
+    APIキー課金でも、枠に達した後は remaining が負になりうる。
+    """
+    snapshot = parse_quota_headers(
+        httpx.Headers(
+            {
+                "anthropic-ratelimit-requests-limit": "1000",
+                "anthropic-ratelimit-requests-remaining": "-50",
+            }
+        )
+    )
+    assert snapshot.requests_remaining_ratio == pytest.approx(0.0)
+
+
+def test_overdrawn_anthropic_fails_over_immediately() -> None:
+    """A clamped 0-remaining reading must route to Ollama with no hysteresis.
+
+    The threshold logic already handles this once the value stops going
+    negative, so no special case is needed: 0 < 10% is a failover.
+
+    枠超過を残量0として読めば、閾値判定がそのまま働いて即座にフェイルオーバー
+    する。特別扱いは不要(0 < 10% は切替条件)。ヒステリシスの逆側(復帰)は
+    残量0では発動しないため、しつこくOllamaを使い続けることにもならない。
+    """
+    tracker = QuotaTracker(fallback_threshold_pct=10.0, recovery_threshold_pct=20.0)
+    assert tracker.observe(
+        parse_quota_headers(httpx.Headers({"anthropic-ratelimit-unified-5h-utilization": "1.12"}))
+    ) is BackendMode.FALLBACK
+
+    # 枠超過のままでは回復判定も発動しない / no recovery while still overdrawn
+    assert tracker.observe(
+        parse_quota_headers(httpx.Headers({"anthropic-ratelimit-unified-5h-utilization": "1.05"}))
+    ) is BackendMode.FALLBACK
