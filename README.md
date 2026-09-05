@@ -48,11 +48,15 @@ Claude Code --ANTHROPIC_BASE_URL--> claude-spillway --> Anthropic API
   (Ollama's Anthropic-compatible endpoint only accepts `Authorization:
   Bearer`, not `x-api-key` — see
   [ollama/ollama#16922](https://github.com/ollama/ollama/issues/16922)).
-- While in fallback mode, a background probe periodically pings Anthropic
-  with a minimal request to detect recovery. Once the remaining ratio climbs
-  back above `recovery_threshold_pct` (default 20%, intentionally higher
-  than the fallback threshold to avoid flapping), traffic switches back to
-  Anthropic.
+- A background probe reads your quota from the OAuth usage endpoint — the one
+  Claude Code itself reads for `/usage` — which **consumes no quota** and also
+  reports when each window resets. Once the remaining ratio climbs back above
+  `recovery_threshold_pct` (default 20%, intentionally higher than the
+  fallback threshold to avoid flapping), traffic switches back to Anthropic.
+  That endpoint is OAuth-only and is not part of the published API, so when it
+  is unavailable the proxy falls back to the rate-limit headers of relayed
+  traffic — and, only while in fallback where no traffic is flowing, to a
+  minimal `/v1/messages` request that does cost a little quota.
 
 ### Why only `/v1/messages` fails over
 
@@ -127,11 +131,11 @@ uv sync
    claude-spillway monitor
    ```
 
-   claude-spillway never holds Anthropic credentials of its own — it only
-   learns your quota by reading the rate-limit headers on responses to
-   requests Claude Code actually sends through it. So `monitor` shows a
-   "waiting" message until at least one real request has passed through;
-   it can't proactively poll Anthropic on its own.
+   claude-spillway never holds Anthropic credentials of its own — it borrows
+   the one Claude Code sends. So `monitor` shows a "waiting" message until at
+   least one real request has passed through. After that it keeps polling on
+   its own and stays live even while you are idle, because reading the usage
+   endpoint costs no quota.
 
 You can try the whole flow without any real credentials using the bundled
 fake upstream servers — see
@@ -162,7 +166,8 @@ If neither exists, claude-spillway starts on its built-in defaults. Key fields:
 | `ollama.api_key` | — | Ollama Cloud API key (supports `${ENV_VAR}`) |
 | `quota.fallback_threshold_pct` | `10.0` | Remaining % below which we fail over |
 | `quota.recovery_threshold_pct` | `20.0` | Remaining % above which we switch back |
-| `quota.probe_interval_seconds` | `60.0` | How often to probe Anthropic while in fallback |
+| `quota.probe_interval_seconds` | `60.0` | How often the background probe refreshes the quota reading |
+| `quota.use_usage_endpoint` | `true` | Read quota from the OAuth usage endpoint (consumes no quota) |
 | `model_mapping.rules` / `model_mapping.default` | — | Anthropic model name -> Ollama model name |
 
 CLI flags on `claude-spillway serve` (`--host`, `--port`,

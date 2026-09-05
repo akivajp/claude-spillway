@@ -33,11 +33,25 @@ quota:
   # Switch back to Anthropic at this % (hysteresis, to avoid flapping).
   # 残量がこの%まで回復したらAnthropicへ切り戻す(フラッピング防止のヒステリシス)
   recovery_threshold_pct: 20.0
-  # Interval between recovery probes to Anthropic while in fallback (seconds).
-  # フォールバック中、Anthropicの回復確認プローブを送る間隔(秒)
+  # How often the background probe refreshes the quota reading (seconds).
+  # バックグラウンドプローブがquotaを再取得する間隔(秒)
   probe_interval_seconds: 60.0
-  # max_tokens of the recovery probe (smaller = less quota consumed).
-  # 回復確認プローブのmax_tokens(小さいほどquota消費を抑えられる)
+  # Read quota from the OAuth usage endpoint, which consumes none. It is the
+  # endpoint Claude Code reads for its own /usage, and it also supplies the
+  # reset time of each window. Subscription (OAuth) auth only: with an API key
+  # the proxy falls back to the rate-limit headers of relayed responses, and to
+  # the probe below while in fallback. Set false to never call it.
+  # quotaを消費しないOAuth使用量エンドポイントから残量を読む。Claude Code自身が
+  # /usage で参照しているエンドポイントで、各ウィンドウのリセット時刻もここから
+  # 取得できる。サブスクリプション(OAuth)認証専用で、APIキー課金の場合は中継した
+  # レスポンスのヘッダーに、フォールバック中は下記プローブに切り替わる。
+  # 呼びたくない場合は false にする。
+  use_usage_endpoint: true
+  # Fallback probe, used only when the usage endpoint is unavailable AND we are
+  # in fallback. Unlike the usage endpoint this does consume a little quota, so
+  # keep max_tokens minimal.
+  # 使用量エンドポイントが使えず、かつフォールバック中の場合にのみ使うプローブ。
+  # 使用量エンドポイントと違いわずかにquotaを消費するため max_tokens は最小にする。
   probe_max_tokens: 1
   probe_model: claude-haiku-4-5-20251001
 

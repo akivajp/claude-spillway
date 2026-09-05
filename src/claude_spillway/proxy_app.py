@@ -83,6 +83,11 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
                     "tokens_remaining_ratio": snapshot.tokens_remaining_ratio if snapshot else None,
                     "remaining_ratio": snapshot.remaining_ratio() if snapshot else None,
                     "observed_at": snapshot.observed_at if snapshot else None,
+                    # 各ウィンドウのリセット時刻(エポック秒)と、この観測値の取得元。
+                    # When each window resets (epoch seconds), and where the reading came from.
+                    "reset_5h": snapshot.reset_5h if snapshot else None,
+                    "reset_7d": snapshot.reset_7d if snapshot else None,
+                    "source": snapshot.source if snapshot else None,
                 },
                 "ollama": {
                     # Ollama Cloud has no official quota API (as of 2026-09),

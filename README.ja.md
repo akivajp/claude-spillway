@@ -24,7 +24,7 @@ Claude Code --ANTHROPIC_BASE_URL--> claude-spillway --> Anthropic API
 - Anthropicからのすべてのレスポンスには、レート制限ヘッダー(サブスクリプションプランなら`anthropic-ratelimit-unified-5h-utilization`/`anthropic-ratelimit-unified-7d-utilization`、APIキー課金なら`anthropic-ratelimit-{requests,tokens}-{limit,remaining}`)が付与されています。claude-spillwayはこれを毎リクエストで読み取るだけなので、利用状況を知るための追加のAPI呼び出しは不要です。
 - 既知の指標のうち最も逼迫している残量比率が`fallback_threshold_pct`(デフォルト10%)を下回ると、以降の`POST /v1/messages`は`model_mapping`設定に従ってモデル名を書き換えた上でOllama Cloudへルーティングされます。
 - claude-spillway自体はAnthropicの認証情報を保持する必要がありません。Claude Codeが送ってくる`Authorization`/`x-api-key`ヘッダーをそのまま横流しするだけです。Ollama Cloud側だけ、設定ファイルにAPIキーが必要です(Ollama側のAnthropic互換エンドポイントは`x-api-key`を受け付けず`Authorization: Bearer`のみ有効なため。[ollama/ollama#16922](https://github.com/ollama/ollama/issues/16922)参照)。
-- フォールバック中は、バックグラウンドで定期的にAnthropicへ軽量なプローブリクエストを送って回復を確認します。残量比率が`recovery_threshold_pct`(デフォルト20%。fallback閾値より意図的に高く設定し、フラッピングを防止)を上回ったら、Anthropicへ切り戻します。
+- バックグラウンドのプローブが、OAuthの使用量エンドポイント(Claude Code自身が`/usage`で参照しているもの)からquotaを読み取ります。**quotaを一切消費せず**、各ウィンドウのリセット時刻も取得できます。残量比率が`recovery_threshold_pct`(デフォルト20%。fallback閾値より意図的に高く設定し、フラッピングを防止)を上回ったら、Anthropicへ切り戻します。このエンドポイントはOAuth専用かつ公開APIではないため、利用できない場合は中継したレスポンスのヘッダーへ、さらにトラフィックが流れないフォールバック中に限り、わずかにquotaを消費する軽量な`/v1/messages`リクエストへとフォールバックします。
 
 ### なぜ`/v1/messages`だけをフェイルオーバー対象にしているか
 
@@ -87,10 +87,11 @@ uv sync
    claude-spillway monitor
    ```
 
-   claude-spillwayはAnthropicの認証情報を自前で保持しないため、Claude Codeが
-   実際に送ってきたリクエストのレスポンスヘッダーを読んで初めてquotaを知る
-   設計になっています。そのため、少なくとも1回リクエストが通るまで`monitor`
-   は「待機中」と表示し続けます(自発的にAnthropicへ問い合わせることはできません)。
+   claude-spillwayはAnthropicの認証情報を自前で保持せず、Claude Codeが送って
+   きたものを借りる設計です。そのため、少なくとも1回リクエストが通るまで
+   `monitor`は「待機中」と表示し続けます。それ以降は自発的にポーリングを行い、
+   使用量エンドポイントの読み取りはquotaを消費しないため、操作していない間も
+   表示は最新に保たれます。
 
 実際の資格情報を使わずに一連の流れを試したい場合は、同梱のダミーサーバーが使えます。[`scripts/manual_smoketest/`](scripts/manual_smoketest/)を参照してください。
 
@@ -115,7 +116,8 @@ Windows + WSL2環境で使う場合は、[docs/wsl-windows.ja.md](docs/wsl-windo
 | `ollama.api_key` | — | Ollama CloudのAPIキー(`${ENV_VAR}`形式で環境変数展開可) |
 | `quota.fallback_threshold_pct` | `10.0` | この残量%を下回るとフェイルオーバーする |
 | `quota.recovery_threshold_pct` | `20.0` | この残量%まで回復すると切り戻す |
-| `quota.probe_interval_seconds` | `60.0` | フォールバック中にAnthropicへ回復確認する間隔 |
+| `quota.probe_interval_seconds` | `60.0` | バックグラウンドプローブがquotaを再取得する間隔 |
+| `quota.use_usage_endpoint` | `true` | OAuth使用量エンドポイントからquotaを読む(quota消費なし) |
 | `model_mapping.rules` / `model_mapping.default` | — | Anthropicのモデル名 -> Ollama側のモデル名 |
 
 `claude-spillway serve`のCLIオプション(`--host`, `--port`, `--fallback-threshold-pct`, `--recovery-threshold-pct`, `--log-level`)は設定ファイルより優先されます。詳細は`claude-spillway --help` / `claude-spillway serve --help` / `claude-spillway monitor --help`を実行してください。

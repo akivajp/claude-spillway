@@ -180,3 +180,105 @@ async def test_head_healthcheck_is_forwarded_to_anthropic(settings: Settings) ->
 
     assert calls["anthropic"] == 1
     await backends.aclose()
+
+
+async def test_usage_endpoint_is_preferred_and_costs_no_quota(settings: Settings) -> None:
+    """The probe reads the usage endpoint, not /v1/messages, when it answers.
+
+    使用量エンドポイントが応答する限り、/v1/messages のプローブは使われないこと。
+    """
+    calls = {"usage": 0, "messages": 0}
+
+    def anthropic_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/oauth/usage":
+            calls["usage"] += 1
+            assert request.headers.get("authorization") == "Bearer oauth-token"
+            assert request.headers.get("anthropic-beta") == "oauth-2025-04-20"
+            return httpx.Response(200, json={"five_hour": {"utilization": 5.0}})
+        calls["messages"] += 1
+        return httpx.Response(200, json={"id": "msg"})
+
+    backends = ProxyBackends(
+        settings,
+        anthropic_transport=httpx.MockTransport(anthropic_handler),
+        ollama_transport=httpx.MockTransport(_ollama_messages_handler),
+    )
+    app = create_app(settings, backends=backends)
+    probe = app.state.recovery_probe
+    probe.capture_auth_headers({"authorization": "Bearer oauth-token"})
+
+    await probe._probe_once()
+
+    assert calls["usage"] == 1
+    assert calls["messages"] == 0
+    # 残量95%を観測しているので通常モードのまま / 95% left, so it stays on Anthropic
+    assert app.state.tracker.mode is BackendMode.ANTHROPIC
+    assert app.state.tracker.last_snapshot.source == "usage_api"
+    await backends.aclose()
+
+
+async def test_falls_back_to_messages_probe_when_usage_endpoint_is_gone(settings: Settings) -> None:
+    """A 404 disables the usage endpoint; in fallback we then pay for a probe.
+
+    404なら以後は使用量エンドポイントを使わず、フォールバック中は従来プローブに落ちること。
+    """
+    calls = {"usage": 0, "messages": 0}
+
+    def anthropic_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/oauth/usage":
+            calls["usage"] += 1
+            return httpx.Response(404, json={"error": "not found"})
+        calls["messages"] += 1
+        return httpx.Response(
+            200,
+            headers={"anthropic-ratelimit-unified-5h-utilization": "0.5"},
+            json={"id": "msg"},
+        )
+
+    backends = ProxyBackends(
+        settings,
+        anthropic_transport=httpx.MockTransport(anthropic_handler),
+        ollama_transport=httpx.MockTransport(_ollama_messages_handler),
+    )
+    app = create_app(settings, backends=backends)
+    app.state.tracker.mode = BackendMode.FALLBACK
+    probe = app.state.recovery_probe
+    probe.capture_auth_headers({"authorization": "Bearer oauth-token"})
+
+    await probe._probe_once()
+    assert calls == {"usage": 1, "messages": 1}
+    # 残量50%まで回復したので切り戻る / recovered to 50% left, so it switches back
+    assert app.state.tracker.mode is BackendMode.ANTHROPIC
+
+    # 404で無効化済みなので、2回目はもう叩かない / disabled after the 404, so never retried
+    app.state.tracker.mode = BackendMode.FALLBACK
+    await probe._probe_once()
+    assert calls["usage"] == 1
+
+
+async def test_api_key_auth_never_calls_the_oauth_endpoint(settings: Settings) -> None:
+    """The usage endpoint is OAuth-only, so an API key must not trigger it.
+
+    使用量エンドポイントはOAuth専用のため、APIキー認証では呼ばないこと。
+    """
+    calls = {"usage": 0, "messages": 0}
+
+    def anthropic_handler(request: httpx.Request) -> httpx.Response:
+        key = "usage" if request.url.path == "/api/oauth/usage" else "messages"
+        calls[key] += 1
+        return httpx.Response(200, json={"id": "msg"})
+
+    backends = ProxyBackends(
+        settings,
+        anthropic_transport=httpx.MockTransport(anthropic_handler),
+        ollama_transport=httpx.MockTransport(_ollama_messages_handler),
+    )
+    app = create_app(settings, backends=backends)
+    probe = app.state.recovery_probe
+    probe.capture_auth_headers({"x-api-key": "sk-ant-test"})
+
+    await probe._probe_once()
+    assert calls["usage"] == 0
+    # 通常モードなので有料プローブも撃たない / normal mode, so no paid probe either
+    assert calls["messages"] == 0
+    await backends.aclose()

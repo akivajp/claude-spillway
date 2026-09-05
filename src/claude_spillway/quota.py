@@ -7,9 +7,51 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import Enum
+from typing import Any
 
 import httpx
+
+#: Reading taken from the rate-limit headers of a relayed response.
+#: 中継したレスポンスのレート制限ヘッダーから読み取った観測値。
+SOURCE_HEADERS = "headers"
+
+#: Reading taken from the OAuth usage endpoint, which consumes no quota.
+#: quotaを消費しないOAuthの使用量エンドポイントから取得した観測値。
+SOURCE_USAGE_API = "usage_api"
+
+
+def parse_timestamp(raw: str | None) -> float | None:
+    """Parse a reset timestamp into epoch seconds, or ``None`` if unusable.
+
+    Accepts both epoch seconds and RFC 3339, because the documented
+    ``anthropic-ratelimit-*-reset`` headers use RFC 3339 while other sources
+    report plain epoch seconds; taking both costs one branch and avoids
+    guessing wrong.
+
+    リセット時刻をエポック秒として解釈する。解釈できなければ ``None``。
+    公式ドキュメントに記載のある ``anthropic-ratelimit-*-reset`` はRFC 3339
+    形式だが、エポック秒で返す経路もあるため両方を受け付ける(分岐1つで済み、
+    形式を決め打ちして外すリスクを避けられる)。末尾の ``Z`` はPython 3.11の
+    ``fromisoformat`` がそのまま解釈できる。
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.timestamp()
 
 
 class BackendMode(str, Enum):
@@ -34,6 +76,13 @@ class QuotaSnapshot:
     requests_remaining_ratio: float | None
     tokens_remaining_ratio: float | None
     observed_at: float
+    #: Epoch seconds at which each window is fully replenished, when known.
+    #: 各ウィンドウが回復し切る時刻(エポック秒)。不明なら None。
+    reset_5h: float | None = None
+    reset_7d: float | None = None
+    #: Where this reading came from, for display and debugging.
+    #: この観測値の取得元(表示・デバッグ用)。
+    source: str = SOURCE_HEADERS
 
     def remaining_ratio(self) -> float | None:
         """Return the tightest (smallest) remaining ratio among known signals.
@@ -107,6 +156,53 @@ def parse_quota_headers(headers: httpx.Headers) -> QuotaSnapshot:
             "anthropic-ratelimit-tokens-limit",
         ),
         observed_at=time.time(),
+        reset_5h=parse_timestamp(headers.get("anthropic-ratelimit-unified-5h-reset")),
+        reset_7d=parse_timestamp(headers.get("anthropic-ratelimit-unified-7d-reset")),
+        source=SOURCE_HEADERS,
+    )
+
+
+def _percent_to_ratio(value: Any) -> float | None:
+    """Convert a 0-100 utilization percentage into a 0-1 ratio.
+
+    The usage endpoint reports utilization as a percentage while the headers
+    report it as a ratio. Mixing the two silently misreads quota by 100x, so
+    the conversion is done once, here.
+
+    0〜100のパーセント表記の使用率を0〜1の比率へ変換する。
+    使用量エンドポイントはパーセント、ヘッダーは比率で返すため、混同すると
+    100倍ずれた値を静かに読み違える。変換はここ1箇所に集約する。
+    """
+    if not isinstance(value, (int, float)):
+        return None
+    return max(0.0, min(1.0, float(value) / 100.0))
+
+
+def parse_usage_payload(payload: dict[str, Any]) -> QuotaSnapshot:
+    """Build a :class:`QuotaSnapshot` from the OAuth usage endpoint response.
+
+    The endpoint is the one Claude Code itself reads for ``/usage``. It is not
+    part of the published API, so treat a change of shape as "no data" rather
+    than an error: every field is read defensively.
+
+    OAuthの使用量エンドポイントのレスポンスから :class:`QuotaSnapshot` を作る。
+    Claude Code自身が ``/usage`` で参照しているものと同じだが、公開APIでは
+    ないため、形が変わった場合はエラーではなく「データなし」として扱えるよう
+    全フィールドを防御的に読む。
+    """
+    five_hour = payload.get("five_hour") or {}
+    seven_day = payload.get("seven_day") or {}
+    return QuotaSnapshot(
+        utilization_5h=_percent_to_ratio(five_hour.get("utilization")),
+        utilization_7d=_percent_to_ratio(seven_day.get("utilization")),
+        # 使用量エンドポイントはリクエスト数/トークン数の枠を返さない。
+        # The usage endpoint reports no request/token allowances.
+        requests_remaining_ratio=None,
+        tokens_remaining_ratio=None,
+        observed_at=time.time(),
+        reset_5h=parse_timestamp(five_hour.get("resets_at")),
+        reset_7d=parse_timestamp(seven_day.get("resets_at")),
+        source=SOURCE_USAGE_API,
     )
 
 

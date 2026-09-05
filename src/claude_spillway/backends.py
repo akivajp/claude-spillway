@@ -39,6 +39,15 @@ _HOP_BY_HOP_HEADERS = {
 }
 
 
+#: Endpoint Claude Code reads for its own ``/usage`` command. Consumes no quota.
+#: Claude Codeが ``/usage`` で参照しているエンドポイント。quotaを消費しない。
+OAUTH_USAGE_PATH = "/api/oauth/usage"
+
+#: Beta opt-in the usage endpoint requires alongside the OAuth bearer token.
+#: 使用量エンドポイントがOAuthのBearerトークンと併せて要求するbeta指定。
+OAUTH_BETA_HEADER = "oauth-2025-04-20"
+
+
 def _filter_headers(headers: httpx.Headers) -> dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
 
@@ -129,10 +138,38 @@ class ProxyBackends:
         snapshot = parse_quota_headers(response.headers)
         return response, snapshot
 
+    async def fetch_oauth_usage(self, authorization: str) -> httpx.Response:
+        """Read the account's quota from the OAuth usage endpoint.
+
+        This is the endpoint Claude Code itself reads for ``/usage``. It is a
+        plain read whose response carries no rate-limit headers, so unlike
+        :meth:`probe_anthropic` it consumes no quota at all. It is not part of
+        the published API, so callers must treat any non-200 as "no data".
+
+        OAuthの使用量エンドポイントからアカウントのquotaを読み取る。
+        Claude Code自身が ``/usage`` で参照しているものと同じ。単なる読み取りで
+        レスポンスにレート制限ヘッダーが付かない = :meth:`probe_anthropic` と
+        違いquotaを一切消費しない。公開APIではないため、呼び出し側は200以外を
+        「データなし」として扱うこと。
+        """
+        return await self._anthropic_client.get(
+            OAUTH_USAGE_PATH,
+            headers={
+                "authorization": authorization,
+                "anthropic-beta": OAUTH_BETA_HEADER,
+                "accept": "application/json",
+            },
+        )
+
     async def probe_anthropic(self, headers: dict[str, str], payload: dict[str, Any]) -> httpx.Response:
         """Send the lightweight recovery-check request to Anthropic while in fallback.
 
+        Costs a small amount of quota, so it is only used when
+        :meth:`fetch_oauth_usage` is unavailable.
+
         フォールバック中に、回復確認のための軽量リクエストをAnthropicへ送る。
+        わずかにquotaを消費するため、:meth:`fetch_oauth_usage` が使えない場合の
+        フォールバックとしてのみ使用する。
         """
         return await self._anthropic_client.post("/v1/messages", headers=headers, json=payload)
 

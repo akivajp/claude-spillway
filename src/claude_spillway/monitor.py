@@ -43,6 +43,29 @@ def _fmt_time(ts: float | None) -> str:
     return datetime.fromtimestamp(ts, tz=UTC).astimezone().strftime("%H:%M:%S")
 
 
+def _fmt_reset(ts: float | None) -> str:
+    """Render a reset time as a local clock time plus how long until then.
+
+    The absolute time answers "when can I use it again"; the countdown answers
+    "how long do I have to wait", and both are wanted at a glance.
+
+    リセット時刻を「ローカル時刻 + あとどれくらいか」の形で表示する。
+    絶対時刻は「いつ使えるようになるか」、カウントダウンは「あとどれだけ待つか」に
+    答えるもので、一目で両方を知りたいため併記する。
+    """
+    if ts is None:
+        return "-"
+    clock = datetime.fromtimestamp(ts, tz=UTC).astimezone().strftime("%H:%M")
+    remaining = int(ts - datetime.now(tz=UTC).timestamp())
+    if remaining <= 0:
+        # 既に過ぎている(次のリクエストで新しい値が入る)。
+        # Already past; the next reading will carry a fresh value.
+        return clock
+    hours, minutes = divmod(remaining // 60, 60)
+    delta = f"{hours}h{minutes:02d}m" if hours else f"{minutes}m"
+    return f"{clock} ({t('monitor.reset.in', delta=delta)})"
+
+
 def _build_renderable(data: dict, url: str, error: str | None) -> Group:
     mode = data.get("mode", "unknown")
     mode_label = {
@@ -50,10 +73,16 @@ def _build_renderable(data: dict, url: str, error: str | None) -> Group:
         "fallback": "[bold yellow]OLLAMA (fallback)[/bold yellow]",
     }.get(mode, mode)
 
+    # 観測値の取得元。使用量エンドポイント経由ならquotaを消費していないことが分かる。
+    # Where the reading came from: the usage endpoint means no quota was spent on it.
+    source = (data.get("anthropic") or {}).get("source")
+    source_line = f"\nsource   : {t('monitor.source.' + source)}" if source else ""
+
     header = Panel(
         f"backend  : {mode_label}\n"
         f"endpoint : {url}\n"
-        f"updated  : {datetime.now(tz=UTC).astimezone().strftime('%H:%M:%S')}",
+        f"updated  : {datetime.now(tz=UTC).astimezone().strftime('%H:%M:%S')}"
+        f"{source_line}",
         title="claude-spillway monitor",
         border_style="cyan",
     )
@@ -87,30 +116,35 @@ def _build_renderable(data: dict, url: str, error: str | None) -> Group:
     table = Table(title=t("monitor.quota.title"), show_lines=False)
     table.add_column(t("monitor.col.metric"))
     table.add_column(t("monitor.col.remaining"), justify="right")
+    table.add_column(t("monitor.col.resets_at"), justify="right")
     table.add_column(t("monitor.col.observed_at"), justify="right")
     table.add_row(
         t("monitor.row.window_5h"),
         _fmt_pct(_remaining(anthropic.get("utilization_5h"))),
+        _fmt_reset(anthropic.get("reset_5h")),
         _fmt_time(anthropic.get("observed_at")),
     )
     table.add_row(
         t("monitor.row.window_7d"),
         _fmt_pct(_remaining(anthropic.get("utilization_7d"))),
+        _fmt_reset(anthropic.get("reset_7d")),
         _fmt_time(anthropic.get("observed_at")),
     )
     if anthropic.get("requests_remaining_ratio") is not None:
         table.add_row(
             t("monitor.row.requests"),
             _fmt_pct(anthropic.get("requests_remaining_ratio")),
+            "",
             _fmt_time(anthropic.get("observed_at")),
         )
     if anthropic.get("tokens_remaining_ratio") is not None:
         table.add_row(
             t("monitor.row.tokens"),
             _fmt_pct(anthropic.get("tokens_remaining_ratio")),
+            "",
             _fmt_time(anthropic.get("observed_at")),
         )
-    table.add_row(t("monitor.row.min_remaining"), _fmt_pct(anthropic.get("remaining_ratio")), "")
+    table.add_row(t("monitor.row.min_remaining"), _fmt_pct(anthropic.get("remaining_ratio")), "", "")
 
     ollama_table = Table(title=t("monitor.ollama.title"), show_lines=False)
     ollama_table.add_column(t("monitor.col.item"))

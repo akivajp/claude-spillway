@@ -158,6 +158,16 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "tokens (API-key billing)",
         "ja": "トークン数(APIキー課金時)",
     },
+    "monitor.col.resets_at": {"en": "resets", "ja": "リセット"},
+    "monitor.reset.in": {"en": "in {delta}", "ja": "{delta}後"},
+    "monitor.source.headers": {
+        "en": "relayed response headers",
+        "ja": "中継レスポンスのヘッダー",
+    },
+    "monitor.source.usage_api": {
+        "en": "usage endpoint (no quota consumed)",
+        "ja": "使用量エンドポイント (quota消費なし)",
+    },
     "monitor.row.min_remaining": {
         "en": "min. remaining (used for switching)",
         "ja": "判定に使う最小残量",

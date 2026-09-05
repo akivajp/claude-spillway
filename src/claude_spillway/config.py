@@ -134,6 +134,13 @@ class QuotaConfig(BaseModel):
     #: Model used by the recovery probe (a lightweight one is recommended).
     #: 回復確認プローブに使うモデル(軽量モデル推奨)
     probe_model: str = "claude-haiku-4-5-20251001"
+    #: Poll the OAuth usage endpoint, which reports quota without consuming any.
+    #: Subscription (OAuth) auth only; with an API key the proxy falls back to
+    #: the rate-limit headers of relayed traffic. Set false to never call it.
+    #: quotaを消費せずに残量を取得できるOAuth使用量エンドポイントを利用する。
+    #: サブスクリプション(OAuth)認証時のみ有効で、APIキー課金の場合は中継した
+    #: レスポンスのヘッダーにフォールバックする。呼びたくない場合はfalseにする。
+    use_usage_endpoint: bool = True
 
 
 class ModelMappingRule(BaseModel):
