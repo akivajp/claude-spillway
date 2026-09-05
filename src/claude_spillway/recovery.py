@@ -21,7 +21,14 @@ import httpx
 
 from .backends import ProxyBackends
 from .config import Settings
-from .quota import BackendMode, QuotaSnapshot, QuotaTracker, parse_quota_headers, parse_usage_payload
+from .quota import (
+    BackendMode,
+    QuotaSnapshot,
+    QuotaTracker,
+    parse_ollama_usage,
+    parse_quota_headers,
+    parse_usage_payload,
+)
 
 logger = logging.getLogger("claude_spillway.recovery")
 
@@ -49,6 +56,9 @@ class RecoveryProbe:
         # (OAuthトークンが無い、エンドポイントが消えた、beta提供終了など)。
         # このアカウントでは成功し得ないURLを叩き続けるのを防ぐ。
         self._usage_unavailable = False
+        # 同上、Ollama側の使用量エンドポイントについて。
+        # The same, for Ollama's usage endpoint.
+        self._ollama_usage_unavailable = False
 
     def capture_auth_headers(self, headers: dict[str, str]) -> None:
         """Stash the auth headers seen while relaying normally (for probing).
@@ -100,6 +110,9 @@ class RecoveryProbe:
 
     async def _probe_once(self) -> None:
         previous_mode = self._tracker.mode
+        # Ollama側も毎回更新する。読み取りはリクエスト数に計上されないため無料。
+        # Refresh Ollama too; reading its usage is not counted as a request.
+        await self._refresh_ollama_usage()
         snapshot = await self._read_usage_endpoint()
         if snapshot is None and previous_mode is BackendMode.FALLBACK:
             # No free reading available, and we are in fallback with no relayed
@@ -121,6 +134,38 @@ class RecoveryProbe:
             logger.warning(
                 "quota recovered; switching backend %s -> %s", previous_mode.value, new_mode.value
             )
+
+    async def _refresh_ollama_usage(self) -> None:
+        """Read Ollama's own usage endpoint and hand it to the tracker.
+
+        Failures are quiet: without this reading the proxy simply routes the way
+        it always did, so it is never worth interrupting the loop over.
+
+        Ollama自身の使用量エンドポイントを読み、トラッカーへ渡す。
+        失敗しても静かに諦める。この値が無くても従来どおりのルーティングになる
+        だけなので、ループを止めてまで扱う価値はない。
+        """
+        if self._ollama_usage_unavailable or not self._settings.ollama.api_key:
+            return
+        try:
+            response = await self._backends.fetch_ollama_usage()
+        except httpx.HTTPError as exc:
+            logger.debug("ollama usage request failed: %s", exc)
+            return
+        if response.status_code != 200:
+            if 400 <= response.status_code < 500 and response.status_code != 429:
+                self._ollama_usage_unavailable = True
+                logger.info("ollama usage endpoint unavailable (HTTP %s)", response.status_code)
+            return
+        try:
+            snapshot = parse_ollama_usage(response.json())
+        except (ValueError, AttributeError, TypeError) as exc:
+            logger.info("ollama usage payload not understood (%s); ignoring", exc)
+            self._ollama_usage_unavailable = True
+            return
+        if snapshot.remaining_ratio() is None:
+            return
+        self._tracker.observe_ollama(snapshot)
 
     async def _read_usage_endpoint(self) -> QuotaSnapshot | None:
         """Read quota from the OAuth usage endpoint. Returns ``None`` if unusable.

@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .backends import ProxyBackends, to_streaming_response
 from .config import Settings
-from .quota import BackendMode, QuotaTracker
+from .quota import BackendMode, QuotaTracker, RoutingPolicy
 from .recovery import RecoveryProbe
 
 logger = logging.getLogger("claude_spillway.proxy")
@@ -33,15 +33,43 @@ _FAILOVER_PATH = "v1/messages"
 _STARTED_AT = time.time()
 
 
+def _resolve_policy(name: str) -> RoutingPolicy:
+    """Map a configured policy name onto :class:`RoutingPolicy`, warning if unknown.
+
+    設定されたポリシー名を :class:`RoutingPolicy` に対応付ける。未知なら警告する。
+    """
+    try:
+        return RoutingPolicy(name)
+    except ValueError:
+        logger.warning(
+            "unknown routing.policy %r; falling back to %s",
+            name,
+            RoutingPolicy.ANTHROPIC_FIRST.value,
+        )
+        return RoutingPolicy.ANTHROPIC_FIRST
+
+
 def create_app(settings: Settings, backends: ProxyBackends | None = None) -> FastAPI:
     """Build the app. ``backends`` is exposed so tests can inject a mock.
 
     アプリを構築する。``backends`` はテストからモック注入するために公開している。
     """
     backends = backends or ProxyBackends(settings)
+    routing = settings.routing
     tracker = QuotaTracker(
         fallback_threshold_pct=settings.quota.fallback_threshold_pct,
         recovery_threshold_pct=settings.quota.recovery_threshold_pct,
+        # 未知のポリシー名は既定(anthropic_first)に倒す。設定ミスで起動できなく
+        # なるより、従来どおりの安全側で動く方が望ましい。
+        # An unknown policy name falls back to the default: running with the
+        # original behaviour beats refusing to start over a config typo.
+        policy=_resolve_policy(routing.policy),
+        ollama_min_remaining_pct=routing.ollama_min_remaining_pct,
+        balance_session_floor_pct=routing.balance_session_floor_pct,
+        balance_margin_pct=routing.balance_margin_pct,
+        ollama_failure_threshold=routing.ollama_failure_threshold,
+        reverse_failover_min_5h_pct=routing.reverse_failover_min_5h_pct,
+        reverse_failover_cooldown_seconds=routing.reverse_failover_cooldown_seconds,
     )
     recovery_probe = RecoveryProbe(settings, backends, tracker)
 
@@ -66,10 +94,15 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
         現在のバックエンドモードやquota観測値を返す監視用エンドポイント(TUIから利用)。
         """
         snapshot = tracker.last_snapshot
+        ollama_snapshot = tracker.ollama_snapshot
         stats = backends.ollama_stats
         return JSONResponse(
             {
                 "mode": tracker.mode.value,
+                # なぜ今このモードなのか。切替の理由を後から追えるようにする。
+                # Why the current mode was chosen, so a switch can be explained.
+                "reason": tracker.last_reason,
+                "policy": tracker.policy.value,
                 "uptime_seconds": time.time() - _STARTED_AT,
                 "last_switch_at": tracker.last_switch_at,
                 "thresholds": {
@@ -90,12 +123,28 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
                     "source": snapshot.source if snapshot else None,
                 },
                 "ollama": {
-                    # Ollama Cloud has no official quota API (as of 2026-09),
-                    # so only this proxy's self-measured counters are exposed.
-                    # Ollama Cloudには公式のquota取得APIが無いため(2026-09時点)、
-                    # このプロキシが中継したリクエストの自己計測値のみを提供する。
+                    # Account-wide usage, read from Ollama's own usage endpoint.
+                    # It reports no reset times, so those stay absent here.
+                    # Ollama自身の使用量エンドポイントから読んだアカウント全体の
+                    # 使用状況。リセット時刻は返らないためここにも含まれない。
+                    "session_utilization": (
+                        ollama_snapshot.session_utilization if ollama_snapshot else None
+                    ),
+                    "weekly_utilization": (
+                        ollama_snapshot.weekly_utilization if ollama_snapshot else None
+                    ),
+                    "remaining_ratio": ollama_snapshot.remaining_ratio() if ollama_snapshot else None,
+                    "observed_at": ollama_snapshot.observed_at if ollama_snapshot else None,
+                    "weekly_models": (
+                        [{"name": n, "request_count": c} for n, c in ollama_snapshot.weekly_models]
+                        if ollama_snapshot
+                        else []
+                    ),
+                    # このプロキシが中継した分だけの自己計測値。
+                    # Self-measured counters covering only what this proxy relayed.
                     "requests_sent": stats.requests_sent,
                     "requests_failed": stats.requests_failed,
+                    "consecutive_failures": stats.consecutive_failures,
                     "last_request_at": stats.last_request_at,
                     "last_status_code": stats.last_status_code,
                     "last_error": stats.last_error,
@@ -138,7 +187,23 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
         except (json.JSONDecodeError, AttributeError):
             pass
         target_model = settings.model_mapping.resolve(requested_model) if requested_model else None
-        response = await backends.forward_to_ollama(request, body, target_model)
+        try:
+            response = await backends.forward_to_ollama(request, body, target_model)
+        finally:
+            # Ollamaが続けて失敗しているなら、Anthropicへ戻すかをトラッカーが判断する。
+            # 例外で抜ける場合も通したいので finally に置く。
+            # Let the tracker decide whether to go back to Anthropic when Ollama
+            # keeps failing. In `finally` so it also runs when this raises.
+            failures = backends.ollama_stats.consecutive_failures
+            previous_mode = tracker.mode
+            new_mode = tracker.note_ollama_failures(failures)
+            if new_mode is not previous_mode:
+                logger.warning(
+                    "ollama failed %d times in a row; switching backend %s -> %s",
+                    failures,
+                    previous_mode.value,
+                    new_mode.value,
+                )
         return to_streaming_response(response)
 
     return app

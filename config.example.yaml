@@ -55,6 +55,36 @@ quota:
   probe_max_tokens: 1
   probe_model: claude-haiku-4-5-20251001
 
+routing:
+  # How to choose between the backends while neither is critical.
+  #   anthropic_first : stay on Anthropic until it runs low (the default)
+  #   weekly_balance  : while both short windows are comfortable, prefer the
+  #                     side with more of its weekly window left
+  # どちらも逼迫していない状況でのバックエンドの選び方。
+  #   anthropic_first : Anthropicが逼迫するまで使い続ける(デフォルト)
+  #   weekly_balance  : 短い窓が両方とも余裕のある間は、週次窓の残量が多い方を優先
+  policy: anthropic_first
+
+  # Never fail over into an Ollama account that is itself nearly out of quota.
+  # Ollama側の残量がこの%を下回ったら、フェイルオーバー先として使わない。
+  ollama_min_remaining_pct: 5.0
+  # weekly_balance only engages while both short windows hold at least this much.
+  # weekly_balance は、短い窓が両方ともこの%以上残っている間だけ働く。
+  balance_session_floor_pct: 50.0
+  # ...and only switches if the other side is ahead by this much (hysteresis).
+  # かつ相手側がこの%以上優っている場合のみ切り替える(ヒステリシス)。
+  balance_margin_pct: 10.0
+
+  # Reverse failover: Ollama Cloud can get slow or fail outright when a model is
+  # busy, so after this many consecutive failures go back to Anthropic - but only
+  # if its 5h window still has room to serve, and leave Ollama alone for a while.
+  # 逆フェイルオーバー: Ollama Cloudは特定モデルへのアクセス集中時に遅延・失敗する
+  # ことがあるため、連続でこの回数失敗したらAnthropicへ戻す。ただしAnthropicの
+  # 5時間窓に捌けるだけの残量がある場合に限り、戻した後は一定時間Ollamaを使わない。
+  ollama_failure_threshold: 5
+  reverse_failover_min_5h_pct: 10.0
+  reverse_failover_cooldown_seconds: 300.0
+
 # Anthropic model name -> the Ollama Cloud model used during failover.
 # The `target` value is sent verbatim as the "model" field of the Ollama API,
 # so it must be exactly a tag listed on ollama.com/library (adding a custom

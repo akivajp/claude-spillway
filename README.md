@@ -70,13 +70,46 @@ which would be far worse than just missing a token count.
 
 ### A note on Ollama Cloud quota visibility
 
-As of 2026-09, Ollama Cloud has **no official API to check your remaining
-account quota** ([ollama/ollama#15663](https://github.com/ollama/ollama/issues/15663),
-[#16448](https://github.com/ollama/ollama/issues/16448)). claude-spillway
-can't show you an exact "Ollama remaining %" the way it can for Anthropic.
-Instead, the status endpoint and TUI report self-tracked counters (requests
-relayed, failures, last status code) for the traffic that passed through
-this proxy.
+Ollama Cloud still publishes **no documented quota API**
+([ollama/ollama#15663](https://github.com/ollama/ollama/issues/15663),
+[#16448](https://github.com/ollama/ollama/issues/16448)), and its inference
+responses carry no rate-limit headers at all. But its own dashboard reads an
+undocumented `GET /api/usage`, which takes the same API key as inference and is
+not itself counted as a request — so claude-spillway polls that for the session
+and weekly utilization plus a per-model request count.
+
+Two caveats. It is undocumented, so a shape change degrades to "no data" rather
+than an error. And unlike Anthropic, **Ollama reports no reset times**, so
+nothing in this tool can tell you when an Ollama window turns over.
+
+The status endpoint and TUI still also report self-tracked counters (requests
+relayed, failures, last status code) covering only the traffic that passed
+through this proxy.
+
+### Choosing a backend
+
+With both sides' quota visible, `routing.policy` decides between them while
+neither is critical:
+
+- `anthropic_first` (default) — stay on Anthropic until it runs low, then fail
+  over. The original behaviour.
+- `weekly_balance` — while both short windows are comfortable
+  (`balance_session_floor_pct`), prefer whichever side has more of its **weekly**
+  window left, switching only once the other side is ahead by
+  `balance_margin_pct` so two near-equal backends don't oscillate.
+
+Two guards apply under every policy:
+
+- **Ollama exhaustion.** Never fail over into an Ollama account that is itself
+  nearly out (`ollama_min_remaining_pct`) — that trades one dead end for another.
+- **Reverse failover.** Ollama Cloud can get slow or fail outright when a model
+  is busy. After `ollama_failure_threshold` consecutive failures, traffic goes
+  back to Anthropic provided its 5-hour window still has
+  `reverse_failover_min_5h_pct` left to serve with, and Ollama is left alone for
+  `reverse_failover_cooldown_seconds`.
+
+A hard guard outranks both: if Anthropic drops below
+`quota.fallback_threshold_pct`, traffic fails over regardless of policy.
 
 ## Installation
 
@@ -168,6 +201,9 @@ If neither exists, claude-spillway starts on its built-in defaults. Key fields:
 | `quota.recovery_threshold_pct` | `20.0` | Remaining % above which we switch back |
 | `quota.probe_interval_seconds` | `60.0` | How often the background probe refreshes the quota reading |
 | `quota.use_usage_endpoint` | `true` | Read quota from the OAuth usage endpoint (consumes no quota) |
+| `routing.policy` | `anthropic_first` | `anthropic_first` or `weekly_balance` |
+| `routing.ollama_min_remaining_pct` | `5.0` | Never fail over once Ollama is this low |
+| `routing.ollama_failure_threshold` | `5` | Consecutive Ollama failures that send traffic back |
 | `model_mapping.rules` / `model_mapping.default` | — | Anthropic model name -> Ollama model name |
 
 CLI flags on `claude-spillway serve` (`--host`, `--port`,

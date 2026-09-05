@@ -149,18 +149,48 @@ def _build_renderable(data: dict, url: str, error: str | None) -> Group:
     ollama_table = Table(title=t("monitor.ollama.title"), show_lines=False)
     ollama_table.add_column(t("monitor.col.item"))
     ollama_table.add_column(t("monitor.col.value"), justify="right")
-    ollama_table.add_row(t("monitor.row.relayed"), str(ollama.get("requests_sent", 0)))
-    ollama_table.add_row(t("monitor.row.failed"), str(ollama.get("requests_failed", 0)))
-    ollama_table.add_row(t("monitor.row.last_status"), str(ollama.get("last_status_code") or "-"))
-    ollama_table.add_row(t("monitor.row.last_request_at"), _fmt_time(ollama.get("last_request_at")))
+    ollama_table.add_column(t("monitor.col.observed_at"), justify="right")
+    # アカウント全体のquota。Ollamaはリセット時刻を返さないため列は設けない。
+    # Account-wide quota. Ollama reports no reset times, so there is no column for them.
+    ollama_table.add_row(
+        t("monitor.row.session_window"),
+        _fmt_pct(_remaining(ollama.get("session_utilization"))),
+        _fmt_time(ollama.get("observed_at")),
+    )
+    ollama_table.add_row(
+        t("monitor.row.weekly_window"),
+        _fmt_pct(_remaining(ollama.get("weekly_utilization"))),
+        _fmt_time(ollama.get("observed_at")),
+    )
+    top_models = ollama.get("weekly_models") or []
+    if top_models:
+        summary = ", ".join(f"{m['name']} ({m['request_count']})" for m in top_models[:3])
+        ollama_table.add_row(t("monitor.row.top_models"), summary, "")
+    # ここから下はこのプロキシが中継した分のみの自己計測値。
+    # Below this point: self-measured counters covering only what this proxy relayed.
+    ollama_table.add_row(t("monitor.row.relayed"), str(ollama.get("requests_sent", 0)), "")
+    ollama_table.add_row(t("monitor.row.failed"), str(ollama.get("requests_failed", 0)), "")
+    failures = ollama.get("consecutive_failures") or 0
+    if failures:
+        ollama_table.add_row(t("monitor.row.consecutive_failures"), f"[red]{failures}[/red]", "")
+    ollama_table.add_row(t("monitor.row.last_status"), str(ollama.get("last_status_code") or "-"), "")
+    ollama_table.add_row(
+        t("monitor.row.last_request_at"), _fmt_time(ollama.get("last_request_at")), ""
+    )
     if ollama.get("last_error"):
-        ollama_table.add_row(t("monitor.row.last_error"), f"[red]{ollama['last_error']}[/red]")
+        ollama_table.add_row(t("monitor.row.last_error"), f"[red]{ollama['last_error']}[/red]", "")
 
     footer = Panel(
         t(
             "monitor.footer.thresholds",
             fallback=thresholds.get("fallback_pct", "?"),
             recovery=thresholds.get("recovery_pct", "?"),
+        )
+        + "\n"
+        + t(
+            "monitor.footer.policy",
+            policy=data.get("policy", "?"),
+            reason=data.get("reason", "?"),
         ),
         border_style="dim",
     )

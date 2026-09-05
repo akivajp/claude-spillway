@@ -11,7 +11,11 @@ from claude_spillway.quota import (
     SOURCE_HEADERS,
     SOURCE_USAGE_API,
     BackendMode,
+    OllamaSnapshot,
+    QuotaSnapshot,
     QuotaTracker,
+    RoutingPolicy,
+    parse_ollama_usage,
     parse_quota_headers,
     parse_usage_payload,
 )
@@ -151,3 +155,177 @@ def test_usage_payload_feeds_the_tracker_like_headers_do() -> None:
     tracker = QuotaTracker(fallback_threshold_pct=10.0, recovery_threshold_pct=20.0)
     assert tracker.observe(parse_usage_payload({"five_hour": {"utilization": 95.0}})) is BackendMode.FALLBACK
     assert tracker.observe(parse_usage_payload({"five_hour": {"utilization": 70.0}})) is BackendMode.ANTHROPIC
+
+
+def _ollama(session: float | None, weekly: float | None) -> OllamaSnapshot:
+    return parse_ollama_usage(
+        {"limits": {"session": {"usage": session}, "weekly": {"usage": weekly}}}
+    )
+
+
+def _anthropic(util_5h: float, util_7d: float) -> QuotaSnapshot:
+    return parse_quota_headers(
+        httpx.Headers(
+            {
+                "anthropic-ratelimit-unified-5h-utilization": str(util_5h),
+                "anthropic-ratelimit-unified-7d-utilization": str(util_7d),
+            }
+        )
+    )
+
+
+def test_parse_ollama_usage_reads_ratios_and_model_counts() -> None:
+    snapshot = parse_ollama_usage(
+        {
+            "limits": {
+                "session": {"usage": 0, "models": [{"name": "glm-5.3-flash", "request_count": 6}]},
+                "weekly": {
+                    "usage": 0.822,
+                    "models": [
+                        {"name": "gemma4:31b", "request_count": 32},
+                        {"name": "glm-5.3-flash", "request_count": 2672},
+                    ],
+                },
+            }
+        }
+    )
+    assert snapshot.session_utilization == pytest.approx(0.0)
+    assert snapshot.weekly_utilization == pytest.approx(0.822)
+    assert snapshot.weekly_remaining_ratio() == pytest.approx(0.178)
+    # 週次窓の方が逼迫している / the weekly window is the tighter of the two
+    assert snapshot.remaining_ratio() == pytest.approx(0.178)
+    # 多い順に並ぶ / sorted by request count, descending
+    assert snapshot.weekly_models[0] == ("glm-5.3-flash", 2672)
+
+
+def test_parse_ollama_usage_tolerates_odd_shapes() -> None:
+    assert parse_ollama_usage({}).remaining_ratio() is None
+    assert parse_ollama_usage({"limits": {"weekly": {"usage": "0.8"}}}).remaining_ratio() is None
+    assert parse_ollama_usage({"limits": None}).weekly_models == ()
+
+
+def test_exhausted_ollama_is_never_used_as_a_fallback() -> None:
+    """Failing over into an Ollama account that is out of quota helps nobody.
+
+    quotaが尽きたOllamaへフェイルオーバーしても意味がないため、切り替えないこと。
+    """
+    tracker = QuotaTracker(fallback_threshold_pct=10.0, recovery_threshold_pct=20.0)
+    tracker.observe_ollama(_ollama(session=0.0, weekly=0.99))
+    # Anthropicが残5%でも、Ollamaが残1%なら切り替えない
+    # Even with Anthropic at 5% left, 1% left on Ollama is no improvement
+    assert tracker.observe(_anthropic(0.95, 0.5)) is BackendMode.ANTHROPIC
+    assert tracker.last_reason == "ollama_exhausted"
+
+
+def test_weekly_balance_prefers_the_side_with_more_weekly_left() -> None:
+    tracker = QuotaTracker(
+        fallback_threshold_pct=10.0,
+        recovery_threshold_pct=20.0,
+        policy=RoutingPolicy.WEEKLY_BALANCE,
+    )
+    # 短い窓はどちらも余裕あり。週次はAnthropic残30% / Ollama残80% -> Ollamaへ
+    # Both short windows are comfortable; weekly is 30% vs 80%, so Ollama wins
+    tracker.observe_ollama(_ollama(session=0.1, weekly=0.2))
+    assert tracker.observe(_anthropic(0.1, 0.7)) is BackendMode.FALLBACK
+    assert tracker.last_reason == "weekly_balance"
+
+    # Ollama週次が枯れてきたら戻る / once Ollama's weekly drains, come back
+    tracker.observe_ollama(_ollama(session=0.1, weekly=0.9))
+    assert tracker.mode is BackendMode.ANTHROPIC
+
+
+def test_weekly_balance_stands_down_when_a_short_window_is_low() -> None:
+    """Balancing is for spreading the weekly budget, not for rescuing a tight window.
+
+    バランシングは週次予算を均すためのもので、逼迫した短い窓の救済には使わない。
+    """
+    tracker = QuotaTracker(
+        fallback_threshold_pct=10.0,
+        recovery_threshold_pct=20.0,
+        policy=RoutingPolicy.WEEKLY_BALANCE,
+    )
+    # Ollamaのセッション窓が残20%(floor 50%未満)なので週次比較は行わない。
+    # Anthropic側はどの窓も余裕がある値にして、ハードガードと切り分ける。
+    # Ollama's session window is at 20% left, below the 50% floor, so no balancing.
+    # Anthropic is kept comfortable so this cannot be confused with the hard guard.
+    tracker.observe_ollama(_ollama(session=0.8, weekly=0.0))
+    assert tracker.observe(_anthropic(0.1, 0.5)) is BackendMode.ANTHROPIC
+
+
+def test_weekly_balance_needs_a_margin_before_switching() -> None:
+    """A near-tie must not make the backend oscillate.
+
+    拮抗している場合に切り替え続けない(振動防止)こと。
+    """
+    tracker = QuotaTracker(
+        fallback_threshold_pct=10.0,
+        recovery_threshold_pct=20.0,
+        policy=RoutingPolicy.WEEKLY_BALANCE,
+        balance_margin_pct=10.0,
+    )
+    # 週次はAnthropic残50% / Ollama残55%。差5%はマージン10%未満なので動かない
+    # Weekly: 50% vs 55% left. The 5-point gap is under the 10-point margin.
+    tracker.observe_ollama(_ollama(session=0.1, weekly=0.45))
+    assert tracker.observe(_anthropic(0.1, 0.5)) is BackendMode.ANTHROPIC
+
+
+def test_anthropic_low_overrides_the_balancing_policy() -> None:
+    """The hard guard still wins: a critical Anthropic window always fails over.
+
+    ハードガードは常に優先される。Anthropicが逼迫したら必ずフェイルオーバーする。
+    """
+    tracker = QuotaTracker(
+        fallback_threshold_pct=10.0,
+        recovery_threshold_pct=20.0,
+        policy=RoutingPolicy.WEEKLY_BALANCE,
+    )
+    tracker.observe_ollama(_ollama(session=0.1, weekly=0.1))
+    assert tracker.observe(_anthropic(0.95, 0.1)) is BackendMode.FALLBACK
+    assert tracker.last_reason == "anthropic_low"
+
+
+def test_reverse_failover_returns_to_anthropic_after_repeated_ollama_failures() -> None:
+    tracker = QuotaTracker(
+        fallback_threshold_pct=10.0,
+        recovery_threshold_pct=20.0,
+        ollama_failure_threshold=5,
+        reverse_failover_min_5h_pct=10.0,
+    )
+    tracker.observe_ollama(_ollama(session=0.1, weekly=0.1))
+    tracker.observe(_anthropic(0.95, 0.1))
+    assert tracker.mode is BackendMode.FALLBACK
+
+    # 5時間窓は残50%まで戻ったが、週次窓が残15%で回復閾値20%に届かないためFALLBACKのまま。
+    # 逆フェイルオーバーが「回復による切り戻し」と紛れないようにするための状態。
+    # The 5h window recovered to 50% left, but the weekly window sits at 15% -
+    # under the 20% recovery threshold - so it stays in fallback. This keeps the
+    # reverse failover distinguishable from an ordinary recovery.
+    tracker.observe(_anthropic(0.5, 0.85))
+    assert tracker.mode is BackendMode.FALLBACK
+
+    # 4回では動かない / four failures are not enough
+    assert tracker.note_ollama_failures(4) is BackendMode.FALLBACK
+    # 5回目で戻る / the fifth failure triggers it
+    assert tracker.note_ollama_failures(5) is BackendMode.ANTHROPIC
+    assert tracker.last_reason == "ollama_failures"
+
+    # クールダウン中はAnthropicが逼迫しても戻らない / no going back during the cooldown
+    assert tracker.observe(_anthropic(0.99, 0.1)) is BackendMode.ANTHROPIC
+    assert tracker.last_reason == "ollama_cooldown"
+
+
+def test_reverse_failover_stays_put_when_anthropic_has_no_room() -> None:
+    """With Anthropic also out of room there is nowhere better to go.
+
+    Anthropic側にも余裕が無いなら、逃げ先が無いので動かないこと。
+    """
+    tracker = QuotaTracker(
+        fallback_threshold_pct=10.0,
+        recovery_threshold_pct=20.0,
+        ollama_failure_threshold=5,
+        reverse_failover_min_5h_pct=10.0,
+    )
+    tracker.observe_ollama(_ollama(session=0.1, weekly=0.1))
+    tracker.observe(_anthropic(0.95, 0.1))
+    assert tracker.mode is BackendMode.FALLBACK
+    assert tracker.note_ollama_failures(10) is BackendMode.FALLBACK

@@ -172,9 +172,21 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "min. remaining (used for switching)",
         "ja": "判定に使う最小残量",
     },
+    "monitor.row.session_window": {"en": "session window", "ja": "セッション窓"},
+    "monitor.row.weekly_window": {"en": "weekly window", "ja": "週次窓"},
+    "monitor.row.consecutive_failures": {"en": "consecutive failures", "ja": "連続失敗数"},
+    "monitor.row.top_models": {"en": "most used (weekly)", "ja": "利用の多いモデル(週次)"},
+    "monitor.ollama.no_reset": {
+        "en": "Ollama reports no reset times",
+        "ja": "Ollamaはリセット時刻を返しません",
+    },
+    "monitor.footer.policy": {
+        "en": "policy: {policy} ({reason})",
+        "ja": "ポリシー: {policy} ({reason})",
+    },
     "monitor.ollama.title": {
-        "en": "Ollama Cloud (self-measured; no official quota API exists)",
-        "ja": "Ollama Cloud (自己計測値。公式quota APIは存在しません)",
+        "en": "Ollama Cloud",
+        "ja": "Ollama Cloud",
     },
     "monitor.col.item": {"en": "item", "ja": "項目"},
     "monitor.col.value": {"en": "value", "ja": "値"},

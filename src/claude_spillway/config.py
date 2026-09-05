@@ -143,6 +143,41 @@ class QuotaConfig(BaseModel):
     use_usage_endpoint: bool = True
 
 
+class RoutingConfig(BaseModel):
+    """How to choose between the backends, and when to refuse to use Ollama.
+
+    どちらのバックエンドを使うか、またOllamaを使わない条件。
+    """
+
+    #: anthropic_first = stay on Anthropic until it runs low (the original
+    #: behaviour). weekly_balance = while both short windows are comfortable,
+    #: prefer whichever side has more of its weekly window left.
+    #: anthropic_first = Anthropicが逼迫するまで使い続ける(従来の挙動)。
+    #: weekly_balance = 短い窓が両方とも余裕のある間は、週次窓の残量が多い方を
+    #: 優先して負荷を分散する。
+    policy: str = "anthropic_first"
+    #: Never fail over to Ollama once its own quota drops below this %%.
+    #: Ollama側の残量がこの%%を下回ったら、フェイルオーバー先として使わない。
+    ollama_min_remaining_pct: float = 5.0
+    #: weekly_balance only engages while both short windows hold this much.
+    #: weekly_balance は、短い窓が両方ともこの%%以上残っている間だけ働く。
+    balance_session_floor_pct: float = 50.0
+    #: weekly_balance switches only if the other side is ahead by this much,
+    #: which is what stops it oscillating between two near-equal backends.
+    #: weekly_balance は相手側がこの%%以上優っている場合のみ切り替える。
+    #: 拮抗した2者間で振動するのを防ぐためのヒステリシス。
+    balance_margin_pct: float = 10.0
+    #: Consecutive Ollama failures that trigger the reverse failover.
+    #: 逆フェイルオーバーを発動させるOllamaの連続失敗回数。
+    ollama_failure_threshold: int = 5
+    #: The reverse failover only fires if Anthropic's 5h window holds this much.
+    #: 逆フェイルオーバーは、Anthropicの5時間窓がこの%%以上残っている場合のみ発動。
+    reverse_failover_min_5h_pct: float = 10.0
+    #: After a reverse failover, leave Ollama alone for this long.
+    #: 逆フェイルオーバー後、この秒数の間はOllamaを使わない。
+    reverse_failover_cooldown_seconds: float = 300.0
+
+
 class ModelMappingRule(BaseModel):
     #: fnmatch-style glob pattern (e.g. "claude-opus-*").
     #: fnmatch形式のグロブパターン(例: "claude-opus-*")
@@ -174,6 +209,7 @@ class Settings(BaseModel):
     anthropic: AnthropicConfig = Field(default_factory=AnthropicConfig)
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
     quota: QuotaConfig = Field(default_factory=QuotaConfig)
+    routing: RoutingConfig = Field(default_factory=RoutingConfig)
     model_mapping: ModelMappingConfig = Field(default_factory=ModelMappingConfig)
     log_level: str = "INFO"
 

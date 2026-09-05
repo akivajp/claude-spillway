@@ -48,9 +48,21 @@ def _anthropic_messages_handler(utilizations: list[float]):
     return handler
 
 
+#: Shape of Ollama's usage endpoint: 0-1 utilization ratios, and no reset times.
+#: Ollamaの使用量エンドポイントの形。使用率は0〜1で、リセット時刻は返らない。
+_OLLAMA_USAGE_BODY = {
+    "limits": {
+        "session": {"usage": 0.1, "models": [{"name": "glm-5.3-flash", "request_count": 6}]},
+        "weekly": {"usage": 0.2, "models": [{"name": "glm-5.3-flash", "request_count": 2672}]},
+    }
+}
+
+
 def _ollama_messages_handler(request: httpx.Request) -> httpx.Response:
     assert request.headers.get("authorization") == "Bearer test-ollama-key"
     assert "x-api-key" not in request.headers
+    if request.url.path == "/api/usage":
+        return httpx.Response(200, json=_OLLAMA_USAGE_BODY)
     body = json.loads(request.content)
     return httpx.Response(
         200,

@@ -32,7 +32,25 @@ Claude Code --ANTHROPIC_BASE_URL--> claude-spillway --> Anthropic API
 
 ### Ollama Cloud側のquota可視性について
 
-2026年9月時点で、Ollama Cloudにはアカウントの残りquotaを確認する公式APIが**存在しません**([ollama/ollama#15663](https://github.com/ollama/ollama/issues/15663), [#16448](https://github.com/ollama/ollama/issues/16448))。そのため、claude-spillwayはAnthropicのように正確な「Ollama残量%」を表示することはできません。代わりに、ステータスエンドポイントとTUIでは、このプロキシを経由したトラフィックについての自己計測値(中継リクエスト数、失敗数、直近のステータスコード)を報告します。
+Ollama Cloudには、ドキュメント化された公式のquota APIが**依然として存在せず**([ollama/ollama#15663](https://github.com/ollama/ollama/issues/15663), [#16448](https://github.com/ollama/ollama/issues/16448))、推論レスポンスにもレート制限ヘッダーが一切付きません。ただし、Ollama自身のダッシュボードが参照している非公開の `GET /api/usage` は推論と同じAPIキーで叩け、その読み取り自体はリクエスト数に計上されません。claude-spillwayはここからセッション窓・週次窓の使用率とモデル別リクエスト数を取得しています。
+
+注意点が2つあります。非公開エンドポイントであるため、形が変わった場合はエラーではなく「データなし」に縮退します。またAnthropicと異なり、**Ollamaはリセット時刻を返しません**。そのため、Ollama側の窓がいつ切り替わるかは本ツールでは表示できません。
+
+ステータスエンドポイントとTUIでは、これに加えてこのプロキシを経由したトラフィックのみの自己計測値(中継リクエスト数、失敗数、直近のステータスコード)も報告します。
+
+### バックエンドの選択
+
+両者のquotaが見えるようになったため、どちらも逼迫していない状況での選択を `routing.policy` で指定できます。
+
+- `anthropic_first`(デフォルト) — Anthropicが逼迫するまで使い続け、逼迫したらフェイルオーバーする。従来の挙動
+- `weekly_balance` — 短い窓が両方とも余裕のある間(`balance_session_floor_pct`)は、**週次窓**の残量が多い方を優先する。相手側が `balance_margin_pct` 以上優っている場合のみ切り替えるため、拮抗した2者間で振動しない
+
+ポリシーに関係なく、常時2つのガードが働きます。
+
+- **Ollama枯渇ガード** — Ollama側の残量が `ollama_min_remaining_pct` を下回っている場合はフェイルオーバー先にしない(袋小路を別の袋小路に取り替えるだけのため)
+- **逆フェイルオーバー** — Ollama Cloudは特定モデルへのアクセス集中時に遅延・失敗することがある。`ollama_failure_threshold` 回連続で失敗したらAnthropicへ戻す。ただしAnthropicの5時間窓に `reverse_failover_min_5h_pct` 以上の残量がある場合に限り、戻した後は `reverse_failover_cooldown_seconds` の間Ollamaを使わない
+
+さらに上位のハードガードとして、Anthropicの残量が `quota.fallback_threshold_pct` を下回った場合は、ポリシーに関係なくフェイルオーバーします。
 
 ## インストール
 
@@ -118,6 +136,9 @@ Windows + WSL2環境で使う場合は、[docs/wsl-windows.ja.md](docs/wsl-windo
 | `quota.recovery_threshold_pct` | `20.0` | この残量%まで回復すると切り戻す |
 | `quota.probe_interval_seconds` | `60.0` | バックグラウンドプローブがquotaを再取得する間隔 |
 | `quota.use_usage_endpoint` | `true` | OAuth使用量エンドポイントからquotaを読む(quota消費なし) |
+| `routing.policy` | `anthropic_first` | `anthropic_first` または `weekly_balance` |
+| `routing.ollama_min_remaining_pct` | `5.0` | Ollama側がこの残量%を下回ったらフェイルオーバーしない |
+| `routing.ollama_failure_threshold` | `5` | この回数連続で失敗したらAnthropicへ戻す |
 | `model_mapping.rules` / `model_mapping.default` | — | Anthropicのモデル名 -> Ollama側のモデル名 |
 
 `claude-spillway serve`のCLIオプション(`--host`, `--port`, `--fallback-threshold-pct`, `--recovery-threshold-pct`, `--log-level`)は設定ファイルより優先されます。詳細は`claude-spillway --help` / `claude-spillway serve --help` / `claude-spillway monitor --help`を実行してください。

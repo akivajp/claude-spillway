@@ -47,6 +47,12 @@ OAUTH_USAGE_PATH = "/api/oauth/usage"
 #: 使用量エンドポイントがOAuthのBearerトークンと併せて要求するbeta指定。
 OAUTH_BETA_HEADER = "oauth-2025-04-20"
 
+#: Ollama Cloud's account usage endpoint. Undocumented, but it takes the same
+#: API key as inference and reading it is not itself counted as a request.
+#: Ollama Cloudのアカウント使用量エンドポイント。ドキュメント化されていないが、
+#: 推論と同じAPIキーで叩け、読み取り自体はリクエスト数に計上されない。
+OLLAMA_USAGE_PATH = "/api/usage"
+
 
 def _filter_headers(headers: httpx.Headers) -> dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
@@ -68,18 +74,25 @@ class OllamaStats:
     last_request_at: float | None = None
     last_status_code: int | None = None
     last_error: str | None = None
+    #: Failures since the last success. Drives the reverse failover back to
+    #: Anthropic when a busy Ollama model starts refusing traffic.
+    #: 直近の成功以降に連続した失敗数。Ollama側のモデルが混雑して捌けなくなった
+    #: 際に、Anthropicへ戻す逆フェイルオーバーの判断に使う。
+    consecutive_failures: int = 0
 
     def record_success(self, status_code: int) -> None:
         self.requests_sent += 1
         self.last_status_code = status_code
         self.last_request_at = time.time()
         self.last_error = None
+        self.consecutive_failures = 0
 
     def record_failure(self, error: str) -> None:
         self.requests_sent += 1
         self.requests_failed += 1
         self.last_request_at = time.time()
         self.last_error = error
+        self.consecutive_failures += 1
 
 
 class ProxyBackends:
@@ -157,6 +170,26 @@ class ProxyBackends:
             headers={
                 "authorization": authorization,
                 "anthropic-beta": OAUTH_BETA_HEADER,
+                "accept": "application/json",
+            },
+        )
+
+    async def fetch_ollama_usage(self) -> httpx.Response:
+        """Read the Ollama Cloud account's session and weekly usage.
+
+        Ollama publishes no quota API, but its own dashboard reads this
+        endpoint and it accepts the same API key as inference. Reading it does
+        not count as a request, so it is safe to poll.
+
+        Ollama Cloudアカウントのセッション窓・週次窓の使用状況を読み取る。
+        Ollamaは公式のquota APIを公開していないが、自身のダッシュボードが参照して
+        いるこのエンドポイントは推論と同じAPIキーで叩ける。読み取りはリクエスト数に
+        計上されないため、定期的に叩いても問題ない。
+        """
+        return await self._ollama_client.get(
+            OLLAMA_USAGE_PATH,
+            headers={
+                "authorization": f"Bearer {self._settings.ollama.api_key}",
                 "accept": "application/json",
             },
         )
