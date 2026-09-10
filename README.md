@@ -21,6 +21,14 @@ Claude subscription and Ollama Cloud, and you'd rather burn through your
 (often cheaper, more relaxed) Ollama quota automatically instead of getting
 hard-blocked by Anthropic rate limits mid-session.
 
+![The claude-spillway dashboard, showing both backends side by side with their remaining quota, reset countdowns and switching thresholds](https://raw.githubusercontent.com/akivajp/claude-spillway/main/docs/images/dashboard-en.png)
+
+Both backends at a glance, in the browser: how much of each window is left,
+how long until it resets, and markers for the thresholds the proxy switches
+on. The proxy serves the page itself at `http://127.0.0.1:8787/_spillway/`,
+so there is nothing extra to run, and `monitor` prints the address. It is
+available in English and Japanese, switchable from the page.
+
 ## How it works
 
 ```
