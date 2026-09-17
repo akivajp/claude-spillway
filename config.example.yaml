@@ -98,6 +98,102 @@ routing:
   reverse_failover_min_5h_pct: 10.0
   reverse_failover_cooldown_seconds: 300.0
 
+# Model names that exist on Ollama Cloud but not at Anthropic.
+# Failover routes by quota; this routes by name. Claude Code validates a model
+# by actually sending it, so relaying such a name to Anthropic produces the 404
+# it reports as "model not found". Sending it straight to Ollama instead makes
+# the name selectable from /model and keeps it working while Anthropic quota is
+# perfectly healthy.
+#
+# Ollama Cloudには存在し、Anthropicには存在しないモデル名の扱い。
+# フェイルオーバーがquotaで行き先を決めるのに対し、こちらは名前で決める。
+# Claude Codeはモデル名の検証を「実際に送ってみる」ことで行うため、そうした名前を
+# Anthropicへ中継すると404になり、「モデルが見つからない」と報告される。Ollamaへ
+# 直接送ることで /model から選べるようになり、Anthropicのquotaに余裕がある間も
+# 使い続けられる。
+direct_models:
+  # Route by model name regardless of quota. false で従来どおりquotaのみで判断。
+  enabled: true
+  # Learn the names from Ollama Cloud's own listing (GET /api/tags). That read
+  # is not counted as a request, the same way the usage endpoint is not.
+  # Ollama Cloud自身の一覧(GET /api/tags)から名前を取得する。この読み取りは
+  # 使用量エンドポイントと同様、リクエスト数には計上されない。
+  discover: true
+  refresh_interval_seconds: 3600.0
+  # Names treated as direct on top of the discovered ones.
+  # 取得した一覧に加えて直結対象として扱う名前。
+  extra: []
+  # Claude Code asks Anthropic to count tokens for whichever model is selected,
+  # and Anthropic 404s on a name it does not know, leaving the context meter
+  # blind. For a direct-routed model the request is relayed with the model
+  # swapped for this one - an approximate count from a different tokenizer
+  # beats none. Ollama is never asked: its shim is unstable for this endpoint.
+  # Set to "" to relay the request untouched.
+  # Claude Codeは選択中のモデル名でAnthropicにトークン数を問い合わせるが、
+  # Anthropicは知らない名前に404を返し、コンテキスト残量の表示が盲目になる。
+  # 直結対象のモデルでは、モデル名をこの値に差し替えて中継する(別トークナイザに
+  # よる概算でも、何も得られないよりはよい)。Ollamaへは投げない(互換シムが
+  # このエンドポイントで不安定なため)。"" にすると書き換えずそのまま中継する。
+  count_tokens_stand_in: claude-sonnet-5
+
+  # Used by `claude-spillway models --sync-picker`, which writes the modelPicker
+  # key of Claude Code's settings file so these models appear in /model. Only
+  # that key is touched; the model you then pick is saved by Claude Code itself
+  # into the "model" key of the same file, and restored on the next launch.
+  #
+  # `claude-spillway models --sync-picker` が使う設定。Claude Codeの設定ファイルの
+  # modelPicker キーを書き換え、これらのモデルが /model に出るようにする。触るのは
+  # そのキーのみ。選択したモデルはClaude Code自身が同じファイルの "model" キーへ
+  # 保存し、次回起動時に復元する。
+  picker:
+    # Must be the user (or managed) settings file: Claude Code ignores this key
+    # in project-level settings.
+    # ユーザー設定(またはmanaged設定)のファイルであること。プロジェクト設定に
+    # 書いてもClaude Codeはこのキーを読まない。
+    settings_path: ~/.claude/settings.json
+    # The Anthropic model whose client-side handling (prompt profile,
+    # capabilities, effort defaults) Claude Code applies to these rows.
+    # REQUIRED in practice: without it Claude Code does not offer a row at all
+    # for a model the running version has no catalog entry for.
+    # これらの行に対してClaude Codeが流用する、クライアント側の扱い
+    # (プロンプトプロファイル、能力、effort既定値)の元となるAnthropicモデル。
+    # 実質必須。これが無いと、動作中のバージョンがカタログを持たないモデルの行は
+    # そもそもピッカーに出てこない。
+    behaves_as: claude-sonnet-5
+    # {base} = the name Ollama lists, {model} = the name written into the row.
+    # {base} = Ollamaが返す名前、{model} = 行に書き出す名前。
+    label_template: "{base} (Ollama Cloud)"
+    description_template: "Ollama Cloud · routed directly by claude-spillway"
+    # Write glm-5.3-flash:cloud rather than glm-5.3-flash. Both work.
+    # glm-5.3-flash ではなく glm-5.3-flash:cloud と書き出す。どちらでも動く。
+    use_cloud_suffix: true
+    # true hides the built-in Claude lineup from /model. Rarely what you want.
+    # true にすると /model から組み込みのClaudeモデルが消える。通常は不要。
+    replace_built_in_options: false
+    # fnmatch patterns over the names Ollama lists. Empty include = all.
+    # Ollamaが返す名前に対する fnmatch パターン。include が空なら全件。
+    include: []
+    exclude: []
+    # fnmatch patterns whose rows get Claude Code's [1m] marker, so it manages a
+    # 1M-token context instead of the 200k it assumes from behaves_as. The proxy
+    # strips the marker before the request leaves for Ollama. Empty by default:
+    # this asserts a window the listing does not report, and claiming one the
+    # model lacks makes Claude Code overfill the context instead of compacting.
+    # e.g. glm-5.3-flash serves 1M.
+    # 行にClaude Codeの [1m] 印を付ける fnmatch パターン。behaves_as から推定される
+    # 200kではなく、1Mトークンのコンテキストとして管理させる。印はOllamaへ送出する
+    # 直前にプロキシが取り除く。既定は空。一覧からは得られない窓長を主張するもので
+    # あり、実際には無い窓長を主張するとClaude Codeが圧縮せずに詰め込んでしまう。
+    # 例: glm-5.3-flash は1M。
+    extended_context: []
+      # - "glm-5.3-flash"
+    # Per-model overrides. The first rule whose "match" hits is used.
+    # モデル単位の上書き。"match" が最初に一致したルールが使われる。
+    overrides: []
+      # - match: "glm-*"
+      #   label: "GLM 5.3 Flash"
+      #   behaves_as: claude-opus-5
+
 # Anthropic model name -> the Ollama Cloud model used during failover.
 # The `target` value is sent verbatim as the "model" field of the Ollama API,
 # so it must be exactly a tag listed on ollama.com/library (adding a custom

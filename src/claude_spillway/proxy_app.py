@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from .backends import ProxyBackends, to_streaming_response
 from .config import Settings
 from .i18n import get_language, negotiate_language, set_language, supported_languages, t
+from .models import DirectModelRegistry
 from .quota import BackendMode, QuotaTracker, RoutingPolicy
 from .recovery import RecoveryProbe
 
@@ -31,6 +32,15 @@ logger = logging.getLogger("claude_spillway.proxy")
 #: count_tokens やモデル一覧取得等はOllamaの互換シムが不安定なため
 #: (ollama/ollama#13949) 常にAnthropicへ流す。
 _FAILOVER_PATH = "v1/messages"
+
+#: Token counting, which Claude Code calls with whatever model is selected.
+#: It always goes to Anthropic; when the selected model is one Anthropic has
+#: never heard of, the model field is swapped for a stand-in first.
+#:
+#: トークン数の見積もり。Claude Codeは選択中のモデル名でこれを呼ぶ。
+#: 常にAnthropicへ送る。選択中のモデルをAnthropicが知らない場合の扱いは
+#: :func:`_direct_count_tokens_body` を参照。
+_COUNT_TOKENS_PATH = "v1/messages/count_tokens"
 
 _STARTED_AT = time.time()
 
@@ -155,6 +165,31 @@ def _resolve_policy(name: str) -> RoutingPolicy:
         return RoutingPolicy.ANTHROPIC_FIRST
 
 
+def _requested_model(body: bytes) -> str | None:
+    """Read the ``model`` field out of a request body, or ``None`` if unreadable.
+
+    リクエストボディから ``model`` フィールドを読む。読めなければ ``None``。
+    """
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    model = data.get("model")
+    return model if isinstance(model, str) else None
+
+
+def _rewrite_model(body: bytes, model: str) -> bytes:
+    """Return ``body`` with its ``model`` field replaced by ``model``.
+
+    ``body`` の ``model`` フィールドを ``model`` で置き換えたものを返す。
+    """
+    data = json.loads(body)
+    data["model"] = model
+    return json.dumps(data).encode("utf-8")
+
+
 def create_app(settings: Settings, backends: ProxyBackends | None = None) -> FastAPI:
     """Build the app. ``backends`` is exposed so tests can inject a mock.
 
@@ -178,7 +213,12 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
         reverse_failover_min_5h_pct=routing.reverse_failover_min_5h_pct,
         reverse_failover_cooldown_seconds=routing.reverse_failover_cooldown_seconds,
     )
-    recovery_probe = RecoveryProbe(settings, backends, tracker)
+    # 名前でのルーティング(直結)は、quotaによるルーティングとは独立している。
+    # レジストリはプロキシとバックグラウンドの取得処理で共有する。
+    # Name-based (direct) routing is independent of quota-based routing.
+    # The registry is shared between the proxy and the background refresh.
+    direct_models = DirectModelRegistry(settings.direct_models)
+    recovery_probe = RecoveryProbe(settings, backends, tracker, direct_models)
 
     @asynccontextmanager
     async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -200,6 +240,7 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
     app.state.backends = backends
     app.state.tracker = tracker
     app.state.recovery_probe = recovery_probe
+    app.state.direct_models = direct_models
     app.state.settings = settings
 
     @app.get("/_spillway/status")
@@ -274,6 +315,17 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
                     "last_status_code": stats.last_status_code,
                     "last_error": stats.last_error,
                 },
+                "direct_models": {
+                    # 名前によるルーティングの状況。quotaとは独立した経路なので、
+                    # 件数も ollama の中継カウンタとは別に持つ。
+                    # Name-based routing. It is a path independent of quota, so
+                    # its counters are kept apart from the relay counters above.
+                    "enabled": direct_models.enabled,
+                    "models": direct_models.discovered,
+                    "discovered_at": direct_models.discovered_at,
+                    "requests_sent": stats.direct_requests_sent,
+                    "requests_failed": stats.direct_requests_failed,
+                },
             }
         )
 
@@ -319,6 +371,53 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
         header_map = {k.lower(): v for k, v in request.headers.items()}
 
         is_failover_target = request.method == "POST" and full_path == _FAILOVER_PATH
+        is_count_tokens = request.method == "POST" and full_path == _COUNT_TOKENS_PATH
+
+        # 直結判定はquotaより先に行う。Ollamaにしか存在しないモデル名は、
+        # Anthropicへ中継しても404にしかならず、quotaの残量とは無関係だからである。
+        # Direct routing is decided ahead of quota: a model name that exists
+        # only on Ollama can only ever 404 at Anthropic, whatever quota says.
+        requested_model: str | None = None
+        if is_failover_target or is_count_tokens:
+            requested_model = _requested_model(body)
+        is_direct = direct_models.is_direct(requested_model)
+
+        if is_count_tokens and is_direct:
+            # Claude Codeは選択中のモデル名でトークン数を問い合わせるが、
+            # Anthropicは知らない名前に404を返し、コンテキスト残量の表示が
+            # 盲目になる。既知のモデルへ差し替えて中継し、別トークナイザによる
+            # 概算を返す。Ollamaへは投げない(互換シムが不安定なため)。
+            # Claude Code counts tokens under the selected model, and Anthropic
+            # 404s on a name it does not know, leaving the context meter blind.
+            # Relay it under a known model instead, giving an approximate count
+            # from a different tokenizer. Ollama is never asked: its shim is
+            # unstable for this endpoint.
+            stand_in = settings.direct_models.count_tokens_stand_in
+            if stand_in:
+                logger.debug(
+                    "count_tokens for direct model %r relayed as %r",
+                    requested_model,
+                    stand_in,
+                )
+                body = _rewrite_model(body, stand_in)
+
+        if is_failover_target and is_direct:
+            # ユーザーがOllama側のモデルを名指ししている。quotaの状態や
+            # tracker.mode に関わらずOllamaへ送り、結果をquota判断にも
+            # 反映させない(この結果はAnthropicの残量について何も語らないため)。
+            # The user named an Ollama-side model. Send it to Ollama whatever
+            # quota and tracker.mode say, and keep the outcome out of the quota
+            # decision: it tells us nothing about Anthropic's headroom.
+            assert requested_model is not None
+            target_model = direct_models.outbound_name(requested_model)
+            logger.info("routing %r directly to ollama cloud", requested_model)
+            response = await backends.forward_to_ollama(
+                request,
+                body,
+                target_model if target_model != requested_model else None,
+                direct=True,
+            )
+            return to_streaming_response(response)
 
         if not is_failover_target or tracker.mode is BackendMode.ANTHROPIC:
             recovery_probe.capture_auth_headers(header_map)
@@ -362,11 +461,6 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
 
         # Reached only when this is the failover target AND we are in FALLBACK.
         # ここに来るのは is_failover_target かつ tracker.mode が FALLBACK の場合のみ。
-        requested_model: str | None = None
-        try:
-            requested_model = json.loads(body).get("model")
-        except (json.JSONDecodeError, AttributeError):
-            pass
         target_model = settings.model_mapping.resolve(requested_model) if requested_model else None
         try:
             response = await backends.forward_to_ollama(request, body, target_model)

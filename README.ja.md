@@ -63,6 +63,36 @@ Ollama Cloudには、ドキュメント化された公式のquota APIが**依然
 
 さらに上位のハードガードとして、Anthropicの残量が `quota.fallback_threshold_pct` を下回った場合は、ポリシーに関係なくフェイルオーバーします。
 
+## Ollamaのモデルを意図的に使う
+
+フェイルオーバーはquotaで行き先を決めますが、**名前**で決めることもできます。Ollama Cloudにしか存在しないモデルをClaude Codeに指定すると、Anthropicのquotaの状態に関わらず、プロキシがそのままOllamaへ送ります。
+
+これが成立するのは、Claude Codeのモデル名検証の仕組みによります。Claude Codeは一覧を参照するのではなく、実際に1トークンの `POST /v1/messages` を送って結果を見ています。このリクエストは `ANTHROPIC_BASE_URL`、つまりこのプロキシを通ります。`glm-5.3-flash:cloud` をAnthropicへ中継しても404にしかならず、それがまさにClaude Codeの言う `Model '...' not found` です。代わりにOllamaから応答すれば、その名前は使えるようになります。
+
+どの名前が該当するかは、Ollama自身の一覧(`GET /api/tags`。リクエスト数に計上されない読み取り)から1時間ごとに取得します。`claude` で始まる名前とClaude Codeのエイリアス(`opus`、`sonnet` など)は、一覧や設定が何と言おうと決して逸らされません。
+
+### `/model` の一覧に載せる
+
+毎回名前を打つ代わりに、`/model` の一覧へ載せるには次のようにします。
+
+```bash
+claude-spillway models                 # Ollama Cloudが現在提供しているモデル
+claude-spillway models --sync-picker   # Claude Codeの /model 一覧へ登録する
+```
+
+`--sync-picker` は `~/.claude/settings.json` の `modelPicker` キーを書き換えます(パス・フィルタ・ラベルはいずれも設定ファイルの `direct_models.picker` から取ります)。同ファイルの他のキーには触れず、書き換え前の内容は同じ場所に退避します。Claude Codeを再起動すれば一覧に出ます。
+
+選択したあとの挙動はこのプロキシではなくClaude Code自身の機能です。Claude Codeは選択内容を同じファイルの `model` キーへ保存し、次回起動時に復元します。
+
+各行には `behavesAs`(既定 `claude-sonnet-5`)が付きます。これは実質必須です。Claude Codeは、動作中のリリースがカタログを持たないモデルの行をそもそも表示しません。また無しで使うと起動のたびに警告が出て、コンテキスト窓は200kと仮定されます。それより長い窓を持つモデルは `picker.extended_context` に列挙すると、行が `…:cloud[1m]` として書き出されます。この印はOllamaへ送出する直前にプロキシが取り除きます。
+
+### 2つの注意点
+
+- **トークン数の見積もり** — Claude Codeは選択中のモデル名でAnthropicにトークン数を問い合わせますが、Anthropicは知らない名前に404を返すため、コンテキスト残量の表示が盲目になります。直結対象のモデルでは、モデル名を `count_tokens_stand_in` に差し替えて中継し、別トークナイザによる概算を返します(何も得られないよりはまし)。Ollamaへは投げません。互換シムがこのエンドポイントで不安定なためです
+- **quotaによるルーティングには影響しない** — 直結リクエストはバックエンドのモードを動かさず、逆フェイルオーバーの判定にも数えられず、`ollama_min_remaining_pct` にも阻まれません。そのモデルを名指ししたのはユーザーであり、プロキシが判断を上書きすべきではないからです。また、名指ししたモデルが混雑していても、他のすべてのトラフィックの行き先を変えてはなりません。件数は `direct_models` として別枠で報告されます
+
+`direct_models.enabled: false` にすると、これらをすべて無効化して純粋にquotaのみでルーティングします。
+
 ## インストール
 
 Python 3.11以降と[uv](https://docs.astral.sh/uv/)が必要です。
@@ -171,8 +201,15 @@ Windows + WSL2環境で使う場合は、[docs/wsl-windows.ja.md](docs/wsl-windo
 | `routing.ollama_min_remaining_pct` | `5.0` | Ollama側がこの残量%を下回ったらフェイルオーバーしない |
 | `routing.ollama_failure_threshold` | `5` | この回数連続で失敗したらAnthropicへ戻す |
 | `model_mapping.rules` / `model_mapping.default` | — | Anthropicのモデル名 -> Ollama側のモデル名 |
+| `direct_models.enabled` | `true` | Ollamaにしか無いモデル名なら、名前を根拠にそちらへ直結する |
+| `direct_models.discover` | `true` | その名前をOllama自身の一覧から取得する |
+| `direct_models.extra` | `[]` | 取得した一覧に加えて直結対象として扱う名前 |
+| `direct_models.count_tokens_stand_in` | `claude-sonnet-5` | 直結対象のトークン数見積もり時に代役として送るモデル |
+| `direct_models.picker.settings_path` | `~/.claude/settings.json` | `models --sync-picker` が更新する設定ファイル |
+| `direct_models.picker.behaves_as` | `claude-sonnet-5` | これらの行に対してClaude Codeが流用する、既知モデルのクライアント側の扱い |
+| `direct_models.picker.extended_context` | `[]` | 1Mトークンのコンテキストを主張させるパターン |
 
-`claude-spillway serve`のCLIオプション(`--host`, `--port`, `--fallback-threshold-pct`, `--recovery-threshold-pct`, `--log-level`)は設定ファイルより優先されます。詳細は`claude-spillway --help` / `claude-spillway serve --help` / `claude-spillway monitor --help`を実行してください。
+`claude-spillway serve`のCLIオプション(`--host`, `--port`, `--fallback-threshold-pct`, `--recovery-threshold-pct`, `--log-level`)は設定ファイルより優先されます。詳細は`claude-spillway --help` / `claude-spillway serve --help` / `claude-spillway models --help` / `claude-spillway monitor --help`を実行してください。
 
 ### 表示言語
 

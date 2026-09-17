@@ -194,6 +194,152 @@ class ModelMappingRule(BaseModel):
     target: str
 
 
+class ModelPickerOverride(BaseModel):
+    """Per-model overrides for the rows written into Claude Code's model picker.
+
+    Claude Codeのモデルピッカーへ書き出す行の、モデル単位の上書き設定。
+    """
+
+    #: fnmatch-style glob matched against the discovered Ollama model name
+    #: (the bare name, without the ``:cloud`` / ``-cloud`` suffix).
+    #: 検出されたOllamaのモデル名(``:cloud`` / ``-cloud`` を付ける前の素の名前)に
+    #: 対して照合する fnmatch 形式のグロブ。
+    match: str
+    #: Row title. ``None`` keeps the generated one.
+    #: 行のタイトル。``None`` なら自動生成のものを使う。
+    label: str | None = None
+    #: Row subtitle. ``None`` keeps the generated one.
+    #: 行のサブタイトル。``None`` なら自動生成のものを使う。
+    description: str | None = None
+    #: Anthropic model whose client-side handling Claude Code should apply.
+    #: ``None`` keeps :attr:`ModelPickerConfig.behaves_as`.
+    #: Claude Codeがクライアント側の扱いを流用するAnthropicモデル。
+    #: ``None`` なら :attr:`ModelPickerConfig.behaves_as` を使う。
+    behaves_as: str | None = None
+
+
+class ModelPickerConfig(BaseModel):
+    """How ``claude-spillway models --sync-picker`` fills Claude Code's picker.
+
+    It writes the ``modelPicker`` key of Claude Code's settings file, which is
+    the only supported way to add a model Claude Code does not ship knowledge
+    of to the ``/model`` list. Nothing else in that file is touched.
+
+    ``claude-spillway models --sync-picker`` がClaude Codeのモデルピッカーを
+    どう埋めるか。Claude Codeの設定ファイルの ``modelPicker`` キーを書き換える。
+    Claude Codeが知らないモデルを ``/model`` の一覧へ出す唯一の手段がこれである。
+    同ファイルの他のキーには触れない。
+    """
+
+    #: Claude Code settings file to update. ``~`` is expanded.
+    #: Project-level settings are ignored by Claude Code for this key, so this
+    #: must point at the user (or managed) settings file.
+    #: 書き換える対象のClaude Code設定ファイル。``~`` は展開される。
+    #: このキーはプロジェクト設定からは読まれないため、ユーザー設定
+    #: (またはmanaged設定)のファイルを指す必要がある。
+    settings_path: str = "~/.claude/settings.json"
+    #: Anthropic model ID whose client-side handling (prompt profile,
+    #: capabilities, effort defaults) Claude Code applies to these rows. Without
+    #: it a model Claude Code does not know is not offered in the picker at all.
+    #: これらの行に対してClaude Codeが流用する、クライアント側の扱い
+    #: (プロンプトプロファイル、能力、effort既定値)の元となるAnthropicモデルID。
+    #: これが無いとClaude Codeが知らないモデルはピッカーに出てこない。
+    behaves_as: str = "claude-sonnet-5"
+    #: Row title. ``{model}`` is the name sent to Ollama, ``{base}`` the bare one.
+    #: 行のタイトル。``{model}`` はOllamaへ送る名前、``{base}`` は素の名前。
+    label_template: str = "{base} (Ollama Cloud)"
+    #: Row subtitle, with the same placeholders.
+    #: 行のサブタイトル。プレースホルダは同じ。
+    description_template: str = "Ollama Cloud \u00b7 routed directly by claude-spillway"
+    #: Write ``glm-5.3-flash:cloud`` rather than ``glm-5.3-flash``. Ollama Cloud
+    #: accepts both; the suffixed spelling is the one Ollama itself uses for a
+    #: cloud-hosted model, so it makes the picker row unambiguous.
+    #: ``glm-5.3-flash`` ではなく ``glm-5.3-flash:cloud`` と書き出す。Ollama Cloudは
+    #: どちらも受け付けるが、サフィックス付きの方がOllama自身がクラウド実行の
+    #: モデルを指すときの表記であり、ピッカー上の見分けが付きやすい。
+    use_cloud_suffix: bool = True
+    #: Hide the built-in Claude lineup from the picker. Almost never wanted:
+    #: the point of this proxy is to have both sides available.
+    #: 組み込みのClaudeモデル一覧をピッカーから隠す。このプロキシは両者を
+    #: 使い分けるためのものなので、通常は有効にしない。
+    replace_built_in_options: bool = False
+    #: fnmatch patterns limiting which discovered models get a row. Empty = all.
+    #: 行を作るモデルを絞り込む fnmatch パターン。空ならすべて。
+    include: list[str] = Field(default_factory=list)
+    #: fnmatch patterns excluded even when they match :attr:`include`.
+    #: :attr:`include` に一致しても除外する fnmatch パターン。
+    exclude: list[str] = Field(default_factory=list)
+    #: fnmatch patterns whose rows get Claude Code's ``[1m]`` marker, telling it
+    #: to manage a 1M-token context rather than the 200k it assumes from
+    #: :attr:`behaves_as`. The proxy strips the marker again before the request
+    #: leaves for Ollama. This is an assertion about the model, not something
+    #: the listing reports, so it is empty by default: claiming a window the
+    #: model does not have makes Claude Code overfill the context instead of
+    #: compacting, and the request fails at Ollama.
+    #: 行に対してClaude Codeの ``[1m]`` 印を付ける fnmatch パターン。
+    #: :attr:`behaves_as` から推定される200kではなく、1Mトークンのコンテキストとして
+    #: 管理させる。印はOllamaへ送出する直前にプロキシ側で取り除かれる。
+    #: これはモデルに対する主張であって一覧から得られる情報ではないため、既定は空。
+    #: 実際には無い窓長を主張すると、Claude Codeが圧縮せずにコンテキストを詰め込み、
+    #: Ollama側でリクエストが失敗する。
+    extended_context: list[str] = Field(default_factory=list)
+    overrides: list[ModelPickerOverride] = Field(default_factory=list)
+
+
+class DirectModelsConfig(BaseModel):
+    """Routing for model names that only exist on Ollama Cloud.
+
+    Failover routes by quota; this routes by name. When Claude Code asks for a
+    model Anthropic has never heard of but Ollama Cloud serves, relaying it to
+    Anthropic can only ever produce a 404 - which is exactly the "model not
+    found" Claude Code reports when such a name is selected. Sending it straight
+    to Ollama instead makes the name usable, and makes it stay usable while
+    Anthropic quota is perfectly healthy.
+
+    Ollama Cloudにしか存在しないモデル名のルーティング。
+    フェイルオーバーがquotaで行き先を決めるのに対し、こちらは名前で決める。
+    Anthropicが知らずOllama Cloudにあるモデルを指定された場合、Anthropicへ
+    中継しても404にしかならない(Claude Codeが「モデルが見つからない」と
+    報告するのはまさにこれ)。Ollamaへ直接送ることで、その名前が使えるようになり、
+    かつAnthropicのquotaに余裕がある間も使い続けられる。
+    """
+
+    #: Route a request straight to Ollama when its model name is one of
+    #: Ollama Cloud's, regardless of quota. ``false`` restores the pure
+    #: quota-driven behaviour.
+    #: モデル名がOllama Cloudのものであれば、quotaの状態に関わらずOllamaへ
+    #: 直接送る。``false`` にすると純粋にquota駆動の従来動作に戻る。
+    enabled: bool = True
+    #: Learn the model names from Ollama Cloud itself instead of listing them
+    #: by hand. The listing is a plain read and is not counted as a request.
+    #: モデル名を手で列挙する代わりにOllama Cloud自身から取得する。
+    #: 一覧取得は単なる読み取りで、リクエスト数には計上されない。
+    discover: bool = True
+    #: How often to refresh that listing, in seconds.
+    #: 一覧を取り直す間隔(秒)。
+    refresh_interval_seconds: float = 3600.0
+    #: Names treated as direct in addition to (or instead of) the discovered
+    #: ones - for a model the listing does not report.
+    #: 取得した一覧に加えて(あるいは代わりに)直結対象として扱う名前。
+    #: 一覧に出ないモデルを使いたい場合に指定する。
+    extra: list[str] = Field(default_factory=list)
+    #: Claude Code asks Anthropic to count tokens for whatever model is
+    #: selected, and Anthropic 404s on a name it does not know - which would
+    #: leave the context meter blind. For a direct-routed model the request is
+    #: relayed with the model swapped for this one, giving an approximate count
+    #: from a different tokenizer rather than nothing at all. Ollama is never
+    #: asked, because its compatibility shim is unstable for this endpoint
+    #: (ollama/ollama#13949). Set to "" to relay the request untouched.
+    #: Claude Codeは選択中のモデル名でAnthropicにトークン数を問い合わせるが、
+    #: Anthropicは知らない名前には404を返し、コンテキスト残量の表示が盲目になる。
+    #: 直結対象のモデルの場合、モデル名をこの値へ差し替えて中継し、別の
+    #: トークナイザによる概算を得る(何も得られないよりはまし)。Ollamaへは投げない。
+    #: このエンドポイントに対して互換シムが不安定なため(ollama/ollama#13949)。
+    #: "" にすると一切書き換えずそのまま中継する。
+    count_tokens_stand_in: str = "claude-sonnet-5"
+    picker: ModelPickerConfig = Field(default_factory=ModelPickerConfig)
+
+
 class ModelMappingConfig(BaseModel):
     #: Fallback used when no rule matches.
     #: どのルールにもマッチしなかった場合のデフォルト
@@ -218,6 +364,7 @@ class Settings(BaseModel):
     quota: QuotaConfig = Field(default_factory=QuotaConfig)
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     model_mapping: ModelMappingConfig = Field(default_factory=ModelMappingConfig)
+    direct_models: DirectModelsConfig = Field(default_factory=DirectModelsConfig)
     log_level: str = "INFO"
 
     @classmethod

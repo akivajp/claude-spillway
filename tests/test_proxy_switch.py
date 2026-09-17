@@ -59,9 +59,18 @@ _OLLAMA_USAGE_BODY = {
 }
 
 
+#: Ollama's model listing. Like the usage endpoint it is a read, not a relay,
+#: so every handler below answers it without counting it.
+#: Ollamaのモデル一覧。使用量エンドポイントと同様に「読み取り」であって中継では
+#: ないため、以下のハンドラはこれを中継数に数えずに応答する。
+_OLLAMA_TAGS_BODY = {"models": [{"name": "gpt-oss:120b"}, {"name": "glm-5.3-flash"}]}
+
+
 def _ollama_messages_handler(request: httpx.Request) -> httpx.Response:
     assert request.headers.get("authorization") == "Bearer test-ollama-key"
     assert "x-api-key" not in request.headers
+    if request.url.path == "/api/tags":
+        return httpx.Response(200, json=_OLLAMA_TAGS_BODY)
     if request.url.path == "/api/usage":
         return httpx.Response(200, json=_OLLAMA_USAGE_BODY)
     body = json.loads(request.content)
@@ -129,6 +138,8 @@ async def test_429_from_anthropic_fails_over_mid_session(settings: Settings) -> 
         return httpx.Response(429, json={"error": {"message": "rate limit exceeded"}})
 
     def ollama_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json=_OLLAMA_TAGS_BODY)
         if request.url.path == "/api/usage":
             # 使用状況の読み取りは中継ではないため、中継数には数えない。
             # Reading usage is not a relay, so it must not count as one.
@@ -438,6 +449,8 @@ async def test_never_relays_into_an_exhausted_ollama_when_anthropic_rejects(
         return httpx.Response(429, json={"error": {"message": "rate limit exceeded"}})
 
     def ollama_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json=_OLLAMA_TAGS_BODY)
         if request.url.path == "/api/usage":
             return httpx.Response(200, json=_OLLAMA_USAGE_EXHAUSTED)
         calls["ollama_messages"] += 1
@@ -501,6 +514,8 @@ async def test_a_429_that_still_reports_headroom_is_not_exhaustion(settings: Set
     calls = {"ollama": 0}
 
     def ollama_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json=_OLLAMA_TAGS_BODY)
         if request.url.path == "/api/usage":
             return httpx.Response(200, json=_OLLAMA_USAGE_BODY)
         calls["ollama"] += 1

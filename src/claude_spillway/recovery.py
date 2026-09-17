@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 import httpx
 
 from .backends import ProxyBackends
 from .config import Settings
+from .models import DirectModelRegistry, parse_ollama_models
 from .quota import (
     BackendMode,
     OllamaResetEstimator,
@@ -44,10 +46,22 @@ class RecoveryProbe:
     フォールバックからの回復を検知するため、Anthropicのquotaを定期的に確認する。
     """
 
-    def __init__(self, settings: Settings, backends: ProxyBackends, tracker: QuotaTracker) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        backends: ProxyBackends,
+        tracker: QuotaTracker,
+        direct_models: DirectModelRegistry | None = None,
+    ) -> None:
         self._settings = settings
         self._backends = backends
         self._tracker = tracker
+        #: 既定値を持たせているのは、モデル一覧を使わない呼び出し(テスト等)でも
+        #: そのまま構築できるようにするため。
+        #: Defaulted so callers that do not care about the model list (tests,
+        #: for one) can still construct this the way they always did.
+        self._direct_models = direct_models or DirectModelRegistry(settings.direct_models)
+        self._models_refreshed_at: float | None = None
         self._task: asyncio.Task[None] | None = None
         self._captured_headers: dict[str, str] = {}
         # Set once the usage endpoint answers in a way that will not change on a
@@ -114,9 +128,27 @@ class RecoveryProbe:
                 await self._refresh_ollama_usage()
             except Exception:
                 logger.exception("initial ollama usage read failed")
+            # モデル一覧も起動時点で読む。これが無いと、最初のリフレッシュまでの
+            # 間にOllama側のモデルを指定されてもAnthropicへ中継されてしまい、
+            # まさに直結が防ごうとしている404が返る。
+            # Read the model list at startup too: without it, an Ollama-side
+            # model named before the first refresh would be relayed to Anthropic
+            # and produce exactly the 404 direct routing exists to prevent.
+            try:
+                await self._refresh_ollama_models()
+            except Exception:
+                logger.exception("initial ollama model listing failed")
 
             while True:
                 await asyncio.sleep(interval)
+                # モデル一覧の更新は認証ヘッダーを必要としないため、Anthropicの
+                # quota確認とは独立に、捕捉の有無に関わらず行う。
+                # Refreshing the model list needs no captured credential, so it
+                # runs independently of the Anthropic quota check.
+                try:
+                    await self._refresh_ollama_models()
+                except Exception:
+                    logger.exception("ollama model listing failed")
                 if not self._captured_headers:
                     continue
                 try:
@@ -154,6 +186,49 @@ class RecoveryProbe:
             logger.warning(
                 "quota recovered; switching backend %s -> %s", previous_mode.value, new_mode.value
             )
+
+    async def _refresh_ollama_models(self) -> None:
+        """Refresh the list of models Ollama Cloud serves, at most once per interval.
+
+        Failures are quiet and leave the previous list in place: the proxy then
+        keeps routing the names it already knows, which is strictly better than
+        relaying them to an Anthropic that will 404 on every one.
+
+        Ollama Cloudが提供するモデルの一覧を、設定された間隔ごとに取り直す。
+        失敗しても静かに諦め、直前の一覧をそのまま残す。既に把握している名前は
+        引き続き直結できるため、全件404になるAnthropicへ中継し始めるよりよい。
+        """
+        if not self._direct_models.discovery_enabled or not self._settings.ollama.api_key:
+            return
+        now = time.monotonic()
+        if (
+            self._models_refreshed_at is not None
+            and now - self._models_refreshed_at < self._direct_models.refresh_interval_seconds
+        ):
+            return
+        try:
+            response = await self._backends.fetch_ollama_models()
+        except httpx.HTTPError as exc:
+            logger.debug("ollama model listing request failed: %s", exc)
+            return
+        # 成功・失敗によらず時刻を進める。失敗を毎ティック叩き直さないため。
+        # Advance the clock either way, so a failure is not retried every tick.
+        self._models_refreshed_at = now
+        if response.status_code != 200:
+            logger.info("ollama model listing unavailable (HTTP %s)", response.status_code)
+            return
+        try:
+            names = parse_ollama_models(response.json())
+        except ValueError as exc:
+            logger.info("ollama model listing not understood (%s); ignoring", exc)
+            return
+        if not names:
+            logger.info("ollama model listing returned no usable names; keeping previous list")
+            return
+        previous = set(self._direct_models.discovered)
+        self._direct_models.update(names)
+        if previous != set(names):
+            logger.info("ollama cloud models: %d known (%s)", len(names), ", ".join(names))
 
     async def _refresh_ollama_usage(self) -> None:
         """Read Ollama's own usage endpoint and hand it to the tracker.

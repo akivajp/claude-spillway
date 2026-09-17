@@ -142,6 +142,66 @@ Two guards apply under every policy:
 A hard guard outranks both: if Anthropic drops below
 `quota.fallback_threshold_pct`, traffic fails over regardless of policy.
 
+## Using an Ollama model on purpose
+
+Failover routes by quota. You can also route by **name**: ask Claude Code for a
+model that only exists on Ollama Cloud, and the proxy sends it straight there,
+whatever your Anthropic quota looks like.
+
+This works because of how Claude Code validates a model name: it does not
+consult a list, it sends an actual one-token `POST /v1/messages` and sees what
+comes back. That request goes through `ANTHROPIC_BASE_URL`, which is this proxy.
+Relaying `glm-5.3-flash:cloud` to Anthropic can only produce a 404, which is
+exactly the `Model '...' not found` Claude Code reports. Answering it from
+Ollama instead makes the name work.
+
+The proxy learns which names those are from Ollama's own listing
+(`GET /api/tags`, a read that is not counted as a request), refreshed hourly.
+Names beginning with `claude`, and Claude Code's aliases (`opus`, `sonnet`, …),
+are never diverted whatever the listing or your config says.
+
+### Putting them in `/model`
+
+To get them into the `/model` list rather than having to type the name:
+
+```bash
+claude-spillway models                 # what Ollama Cloud serves right now
+claude-spillway models --sync-picker   # add them to Claude Code's /model list
+```
+
+`--sync-picker` writes the `modelPicker` key of `~/.claude/settings.json` (the
+path, filters and labels all come from `direct_models.picker` in your config).
+Nothing else in that file is touched, and the previous contents are kept beside
+it. Restart Claude Code and the rows are there.
+
+What happens after you pick one is Claude Code's own doing, not this proxy's:
+Claude Code saves the choice into the `model` key of the same file and restores
+it on the next launch.
+
+Each row carries `behavesAs` (default `claude-sonnet-5`), which is not optional
+in practice — Claude Code does not offer a row at all for a model its release
+has no catalog entry for, and without it you get a warning on every launch and a
+context window assumed to be 200k. If a model serves more, list it under
+`picker.extended_context` and the row is written as `…:cloud[1m]`; the proxy
+strips the marker again before the request leaves for Ollama.
+
+### Two things worth knowing
+
+- **Token counting.** Claude Code asks Anthropic to count tokens for whichever
+  model is selected, and Anthropic 404s on a name it does not know — which would
+  leave the context meter blind. For a direct-routed model the request is
+  relayed with the model swapped for `count_tokens_stand_in`, giving an
+  approximate count from a different tokenizer rather than none. Ollama is never
+  asked; its shim is unstable for that endpoint.
+- **Quota routing is untouched.** A direct request never moves the backend mode,
+  never counts toward the reverse failover, and is not blocked by
+  `ollama_min_remaining_pct`. You named that model, so the proxy does not
+  second-guess you — and a busy model you pinned must not reroute everything
+  else. Its counters are reported separately, under `direct_models`.
+
+Set `direct_models.enabled: false` to turn all of this off and route purely by
+quota.
+
 ## Installation
 
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
@@ -257,12 +317,19 @@ If neither exists, claude-spillway starts on its built-in defaults. Key fields:
 | `routing.ollama_min_remaining_pct` | `5.0` | Never fail over once Ollama is this low |
 | `routing.ollama_failure_threshold` | `5` | Consecutive Ollama failures that send traffic back |
 | `model_mapping.rules` / `model_mapping.default` | — | Anthropic model name -> Ollama model name |
+| `direct_models.enabled` | `true` | Route a request by model name when only Ollama serves it |
+| `direct_models.discover` | `true` | Learn those names from Ollama's own listing |
+| `direct_models.extra` | `[]` | Names to treat as direct on top of the discovered ones |
+| `direct_models.count_tokens_stand_in` | `claude-sonnet-5` | Model substituted when counting tokens for a direct-routed one |
+| `direct_models.picker.settings_path` | `~/.claude/settings.json` | Settings file `models --sync-picker` updates |
+| `direct_models.picker.behaves_as` | `claude-sonnet-5` | Known model whose client-side handling Claude Code applies to these rows |
+| `direct_models.picker.extended_context` | `[]` | Patterns whose rows claim a 1M-token context |
 
 CLI flags on `claude-spillway serve` (`--host`, `--port`,
 `--fallback-threshold-pct`, `--recovery-threshold-pct`, `--log-level`)
 override the config file. Run `claude-spillway --help` /
-`claude-spillway serve --help` / `claude-spillway monitor --help` for
-details.
+`claude-spillway serve --help` / `claude-spillway models --help` /
+`claude-spillway monitor --help` for details.
 
 ### Interface language
 

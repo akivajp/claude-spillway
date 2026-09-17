@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
+import json
 import logging
 from pathlib import Path
 
@@ -43,6 +45,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=t("cli.serve.recovery_threshold"),
     )
     serve.add_argument("--log-level", type=str, default=None, help=t("cli.serve.log_level"))
+
+    models = subparsers.add_parser("models", help=t("cli.models.help"))
+    models.add_argument("-c", "--config", type=Path, default=None, help=t("cli.models.config"))
+    models.add_argument(
+        "--sync-picker", action="store_true", help=t("cli.models.sync_picker")
+    )
+    models.add_argument("--settings", type=Path, default=None, help=t("cli.models.settings"))
+    models.add_argument("--dry-run", action="store_true", help=t("cli.models.dry_run"))
 
     monitor = subparsers.add_parser("monitor", help=t("cli.monitor.help"))
     monitor.add_argument("--host", type=str, default="127.0.0.1", help=t("cli.monitor.host"))
@@ -128,6 +138,143 @@ def _run_serve(args: argparse.Namespace) -> None:
     run_server(settings)
 
 
+def _load_settings(config_path: Path | None) -> Settings:
+    """Resolve and load the config file, warning about an explicit path that is missing.
+
+    設定ファイルを解決して読み込む。明示指定されたパスが存在しない場合は警告する。
+    """
+    resolved = resolve_config_path(config_path)
+    if resolved is not None and not resolved.exists():
+        console.print(f"[yellow]{t('cli.warn.config_missing', path=resolved)}[/yellow]")
+    return Settings.load(resolved)
+
+
+def _fetch_ollama_models(settings: Settings) -> list[str] | None:
+    """Read the Ollama Cloud model listing, printing why and returning ``None`` on failure.
+
+    Ollama Cloudのモデル一覧を取得する。失敗時は理由を表示して ``None`` を返す。
+    """
+    import httpx
+
+    from .backends import OLLAMA_TAGS_PATH
+    from .models import parse_ollama_models
+
+    if not settings.ollama.api_key:
+        console.print(f"[red]{t('cli.models.error.no_key')}[/red]")
+        return None
+    url = f"{settings.ollama.base_url.rstrip('/')}{OLLAMA_TAGS_PATH}"
+    try:
+        response = httpx.get(
+            url,
+            headers={
+                "authorization": f"Bearer {settings.ollama.api_key}",
+                "accept": "application/json",
+            },
+            timeout=30.0,
+        )
+    except httpx.HTTPError as exc:
+        console.print(f"[red]{t('cli.models.error.request', error=exc)}[/red]")
+        return None
+    if response.status_code != 200:
+        console.print(f"[red]{t('cli.models.error.status', status=response.status_code)}[/red]")
+        return None
+    names = parse_ollama_models(response.json())
+    if not names:
+        console.print(f"[red]{t('cli.models.error.empty')}[/red]")
+        return None
+    return names
+
+
+def _run_models(args: argparse.Namespace) -> None:
+    """Show the Ollama Cloud models, and optionally register them with Claude Code.
+
+    Ollama Cloudのモデルを一覧表示し、必要に応じてClaude Codeへ登録する。
+    """
+    from rich.table import Table
+
+    from .models import (
+        SETTINGS_PICKER_KEY,
+        cloud_model_name,
+        select_picker_models,
+        sync_model_picker,
+    )
+
+    settings = _load_settings(args.config)
+    picker = settings.direct_models.picker
+    if args.settings is not None:
+        # コマンドラインの指定は設定ファイルより優先される(serveと同じ方針)。
+        # The command line wins over the config file, as it does for serve.
+        picker = picker.model_copy(update={"settings_path": str(args.settings)})
+
+    names = _fetch_ollama_models(settings)
+    if names is None:
+        raise SystemExit(1)
+
+    selected = set(select_picker_models(names, picker))
+    table = Table(title=t("cli.models.table.title"))
+    table.add_column(t("cli.models.col.model"), style="cyan", no_wrap=True)
+    table.add_column(t("cli.models.col.discovered"), style="dim", no_wrap=True)
+    table.add_column(t("cli.models.col.picker"), justify="center")
+    table.add_column(t("cli.models.col.behaves_as"), style="dim", no_wrap=True)
+    for base in names:
+        model = cloud_model_name(base) if picker.use_cloud_suffix else base
+        override = next(
+            (rule for rule in picker.overrides if fnmatch.fnmatch(base, rule.match)), None
+        )
+        behaves_as = override.behaves_as if override and override.behaves_as else picker.behaves_as
+        included = base in selected
+        table.add_row(
+            model,
+            base,
+            f"[green]{t('cli.models.picker.included')}[/green]"
+            if included
+            else f"[dim]{t('cli.models.picker.excluded')}[/dim]",
+            behaves_as if included else "",
+        )
+    console.print(table)
+
+    direct = settings.direct_models.enabled
+    console.print(
+        f"[green]{t('cli.models.direct.on')}[/green]"
+        if direct
+        else f"[yellow]{t('cli.models.direct.off')}[/yellow]"
+    )
+
+    if not args.sync_picker:
+        console.print(f"[dim]{t('cli.models.picker.hint')}[/dim]")
+        return
+
+    # 空のまま書き込むと /model からOllamaの行が消えるだけなので、警告して止める。
+    # Writing an empty list would merely strip every Ollama row from /model, so
+    # warn and stop rather than doing it silently.
+    if not selected:
+        console.print(f"[yellow]{t('cli.models.picker.empty')}[/yellow]")
+        raise SystemExit(1)
+
+    # 既存のsettings.jsonが壊れている/読めない場合に、生のトレースバックではなく
+    # どのファイルで何が起きたかを出す。書き込み先がユーザーの設定ファイルであり、
+    # 原因の分からない失敗はそのまま手作業での調査になるため。
+    # Report which file failed and why rather than a raw traceback: the target
+    # is the user's own settings file, and an unexplained failure there turns
+    # straight into manual investigation.
+    try:
+        path, options, backup = sync_model_picker(names, picker, dry_run=args.dry_run)
+    except (OSError, ValueError, TypeError) as exc:
+        target = Path(picker.settings_path).expanduser()
+        console.print(f"[red]{t('cli.models.error.settings', path=target, error=exc)}[/red]")
+        raise SystemExit(1) from exc
+    if args.dry_run:
+        console.print(f"[yellow]{t('cli.models.picker.dry_run', path=path)}[/yellow]")
+        console.print_json(json.dumps({SETTINGS_PICKER_KEY: {"options": options}}))
+        return
+    console.print(
+        t("cli.models.picker.written", count=len(options), setting=SETTINGS_PICKER_KEY, path=path)
+    )
+    if backup is not None:
+        console.print(f"[dim]{t('cli.models.picker.backup', path=backup)}[/dim]")
+    console.print(t("cli.models.picker.next"))
+
+
 def _run_monitor(args: argparse.Namespace) -> None:
     from .monitor import run_monitor
 
@@ -140,6 +287,8 @@ def main() -> None:
 
     if args.command == "serve":
         _run_serve(args)
+    elif args.command == "models":
+        _run_models(args)
     elif args.command == "monitor":
         _run_monitor(args)
 

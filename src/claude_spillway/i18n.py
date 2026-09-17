@@ -112,6 +112,137 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Polling interval in seconds",
         "ja": "ポーリング間隔(秒)",
     },
+    "cli.models.help": {
+        "en": "List the Ollama Cloud models, and optionally add them to Claude Code's /model picker",
+        "ja": "Ollama Cloudのモデル一覧を表示し、必要ならClaude Codeの /model 一覧へ登録する",
+    },
+    "cli.models.config": {
+        "en": "Path to the YAML config file (same lookup as 'serve')",
+        "ja": "設定YAMLファイルへのパス('serve' と同じ探索順)",
+    },
+    "cli.models.sync_picker": {
+        "en": (
+            "Write the models into the modelPicker key of Claude Code's settings file "
+            "so they appear in /model"
+        ),
+        "ja": (
+            "Claude Code設定ファイルの modelPicker キーへモデルを書き出し、"
+            "/model の一覧に出るようにする"
+        ),
+    },
+    "cli.models.settings": {
+        "en": "Claude Code settings file to update (overrides the config file)",
+        "ja": "書き換える対象のClaude Code設定ファイル(設定ファイルを上書き)",
+    },
+    "cli.models.dry_run": {
+        "en": "Show what would be written without touching the settings file",
+        "ja": "設定ファイルを書き換えず、書き込まれる内容だけを表示する",
+    },
+    "cli.models.table.title": {
+        "en": "Ollama Cloud models",
+        "ja": "Ollama Cloud のモデル一覧",
+    },
+    "cli.models.col.model": {
+        "en": "Model name to select",
+        "ja": "指定するモデル名",
+    },
+    "cli.models.col.discovered": {
+        "en": "As Ollama lists it",
+        "ja": "Ollama上の表記",
+    },
+    "cli.models.col.picker": {
+        "en": "/model",
+        "ja": "/model",
+    },
+    "cli.models.col.behaves_as": {
+        "en": "behavesAs",
+        "ja": "behavesAs",
+    },
+    "cli.models.picker.included": {
+        "en": "yes",
+        "ja": "対象",
+    },
+    "cli.models.picker.excluded": {
+        "en": "-",
+        "ja": "-",
+    },
+    "cli.models.error.no_key": {
+        "en": "error: ollama.api_key is not set, so the model list cannot be read.",
+        "ja": "error: ollama.api_key が未設定のため、モデル一覧を取得できません。",
+    },
+    "cli.models.error.request": {
+        "en": "error: could not reach Ollama Cloud: {error}",
+        "ja": "error: Ollama Cloud へ接続できませんでした: {error}",
+    },
+    "cli.models.error.status": {
+        "en": "error: Ollama Cloud returned HTTP {status} for the model listing.",
+        "ja": "error: Ollama Cloud のモデル一覧取得が HTTP {status} を返しました。",
+    },
+    "cli.models.error.empty": {
+        "en": "error: Ollama Cloud reported no models.",
+        "ja": "error: Ollama Cloud からモデルが1件も返りませんでした。",
+    },
+    "cli.models.direct.on": {
+        "en": (
+            "direct routing is on: selecting one of these in Claude Code sends the request "
+            "straight to Ollama Cloud, whatever your Anthropic quota looks like."
+        ),
+        "ja": (
+            "直結が有効です: Claude Codeでこれらのモデルを選ぶと、Anthropicのquotaの"
+            "状態に関わらずリクエストがOllama Cloudへ直接送られます。"
+        ),
+    },
+    "cli.models.direct.off": {
+        "en": (
+            "direct routing is off (direct_models.enabled: false), so these names are still "
+            "relayed to Anthropic and will be rejected as unknown models."
+        ),
+        "ja": (
+            "直結が無効です(direct_models.enabled: false)。これらの名前は引き続き"
+            "Anthropicへ中継され、未知のモデルとして拒否されます。"
+        ),
+    },
+    "cli.models.error.settings": {
+        "en": "error: could not update {path}: {error}",
+        "ja": "error: {path} を更新できませんでした: {error}",
+    },
+    "cli.models.picker.written": {
+        "en": "wrote {count} row(s) to {setting} in {path}",
+        "ja": "{path} の {setting} に {count} 件の行を書き込みました",
+    },
+    "cli.models.picker.backup": {
+        "en": "previous contents kept at {path}",
+        "ja": "書き換え前の内容を {path} に退避しました",
+    },
+    "cli.models.picker.dry_run": {
+        "en": "dry run: {path} was not modified. It would receive:",
+        "ja": "dry run: {path} は変更していません。書き込まれる内容は次のとおりです:",
+    },
+    "cli.models.picker.empty": {
+        "en": (
+            "warning: no model matched the picker filters, so /model would lose every "
+            "Ollama row. Check direct_models.picker.include / exclude."
+        ),
+        "ja": (
+            "warning: ピッカーのフィルタに一致するモデルがありません。このまま書き込むと"
+            "/model からOllamaの行がすべて消えます。"
+            "direct_models.picker.include / exclude を確認してください。"
+        ),
+    },
+    "cli.models.picker.next": {
+        "en": (
+            "restart Claude Code, then pick one from /model. Claude Code saves the choice "
+            "into the 'model' key of the same file, so it is restored next time."
+        ),
+        "ja": (
+            "Claude Codeを再起動し、/model から選択してください。選択内容はClaude Codeが"
+            "同じファイルの 'model' キーへ保存するため、次回起動時にも引き継がれます。"
+        ),
+    },
+    "cli.models.picker.hint": {
+        "en": "run with --sync-picker to add these to Claude Code's /model list",
+        "ja": "--sync-picker を付けて実行すると、Claude Codeの /model 一覧へ登録できます",
+    },
     "cli.warn.no_ollama_key": {
         "en": "warning: ollama.api_key is not set; requests will fail once we fail over.",
         "ja": "warning: ollama.api_key が未設定です。フェイルオーバー時のリクエストは失敗します。",

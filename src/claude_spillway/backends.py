@@ -53,6 +53,14 @@ OAUTH_BETA_HEADER = "oauth-2025-04-20"
 #: 推論と同じAPIキーで叩け、読み取り自体はリクエスト数に計上されない。
 OLLAMA_USAGE_PATH = "/api/usage"
 
+#: Ollama's native model listing. This is not part of the Anthropic-compatible
+#: shim, so it is unaffected by the hang described in ollama/ollama#13949, and
+#: like the usage endpoint it is a plain read that is not counted as a request.
+#: Ollamaのネイティブなモデル一覧エンドポイント。Anthropic互換シムの一部では
+#: ないため ollama/ollama#13949 のハングとは無関係であり、使用量エンドポイントと
+#: 同様にリクエスト数へ計上されない単なる読み取りである。
+OLLAMA_TAGS_PATH = "/api/tags"
+
 
 def _filter_headers(headers: httpx.Headers) -> dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
@@ -79,19 +87,35 @@ class OllamaStats:
     #: 直近の成功以降に連続した失敗数。Ollama側のモデルが混雑して捌けなくなった
     #: 際に、Anthropicへ戻す逆フェイルオーバーの判断に使う。
     consecutive_failures: int = 0
+    #: Requests routed to Ollama by model name rather than by quota. Counted
+    #: apart from the rest because they are not evidence about quota: the user
+    #: asked for that model, so their failures must not drag the quota-driven
+    #: mode - or the reverse failover - along with them.
+    #: quotaではなくモデル名によってOllamaへ送られたリクエスト。quotaに関する
+    #: 情報ではないため別枠で数える。ユーザーがそのモデルを名指ししたのであり、
+    #: その失敗がquota駆動のモードや逆フェイルオーバーを巻き込んではならない。
+    direct_requests_sent: int = 0
+    direct_requests_failed: int = 0
 
-    def record_success(self, status_code: int) -> None:
-        self.requests_sent += 1
+    def record_success(self, status_code: int, *, direct: bool = False) -> None:
         self.last_status_code = status_code
         self.last_request_at = time.time()
         self.last_error = None
+        if direct:
+            self.direct_requests_sent += 1
+            return
+        self.requests_sent += 1
         self.consecutive_failures = 0
 
-    def record_failure(self, error: str) -> None:
-        self.requests_sent += 1
-        self.requests_failed += 1
+    def record_failure(self, error: str, *, direct: bool = False) -> None:
         self.last_request_at = time.time()
         self.last_error = error
+        if direct:
+            self.direct_requests_sent += 1
+            self.direct_requests_failed += 1
+            return
+        self.requests_sent += 1
+        self.requests_failed += 1
         self.consecutive_failures += 1
 
 
@@ -194,6 +218,24 @@ class ProxyBackends:
             },
         )
 
+    async def fetch_ollama_models(self) -> httpx.Response:
+        """Read the list of models Ollama Cloud currently serves.
+
+        Used to decide which model names must be routed to Ollama instead of
+        being relayed to Anthropic, where they could only ever 404.
+
+        Ollama Cloudが現在提供しているモデルの一覧を読み取る。
+        どのモデル名をAnthropicへ中継せずOllamaへ回すべきかの判断に使う
+        (Anthropicへ送っても404にしかならないため)。
+        """
+        return await self._ollama_client.get(
+            OLLAMA_TAGS_PATH,
+            headers={
+                "authorization": f"Bearer {self._settings.ollama.api_key}",
+                "accept": "application/json",
+            },
+        )
+
     async def probe_anthropic(self, headers: dict[str, str], payload: dict[str, Any]) -> httpx.Response:
         """Send the lightweight recovery-check request to Anthropic while in fallback.
 
@@ -207,7 +249,12 @@ class ProxyBackends:
         return await self._anthropic_client.post("/v1/messages", headers=headers, json=payload)
 
     async def forward_to_ollama(
-        self, request: Request, body: bytes, rewritten_model: str | None
+        self,
+        request: Request,
+        body: bytes,
+        rewritten_model: str | None,
+        *,
+        direct: bool = False,
     ) -> httpx.Response:
         """Relay ``POST /v1/messages`` — and only that — to Ollama Cloud.
 
@@ -244,12 +291,12 @@ class ProxyBackends:
         try:
             response = await self._ollama_client.send(upstream_request, stream=True)
         except httpx.HTTPError as exc:
-            self.ollama_stats.record_failure(str(exc))
+            self.ollama_stats.record_failure(str(exc), direct=direct)
             raise
         if response.status_code >= 400:
-            self.ollama_stats.record_failure(f"HTTP {response.status_code}")
+            self.ollama_stats.record_failure(f"HTTP {response.status_code}", direct=direct)
         else:
-            self.ollama_stats.record_success(response.status_code)
+            self.ollama_stats.record_success(response.status_code, direct=direct)
         return response
 
 
