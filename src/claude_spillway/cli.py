@@ -6,6 +6,7 @@ import argparse
 import fnmatch
 import json
 import logging
+import sys
 from pathlib import Path
 
 from rich.console import Console
@@ -50,6 +51,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     models.add_argument("-c", "--config", type=Path, default=None, help=t("cli.models.config"))
     models.add_argument(
         "--sync-picker", action="store_true", help=t("cli.models.sync_picker")
+    )
+    models.add_argument("--pick", action="store_true", help=t("cli.models.pick"))
+    models.add_argument(
+        "--include", action="append", default=None, metavar="PATTERN", help=t("cli.models.include")
+    )
+    models.add_argument(
+        "--exclude", action="append", default=None, metavar="PATTERN", help=t("cli.models.exclude")
     )
     models.add_argument("--settings", type=Path, default=None, help=t("cli.models.settings"))
     models.add_argument("--dry-run", action="store_true", help=t("cli.models.dry_run"))
@@ -185,6 +193,98 @@ def _fetch_ollama_models(settings: Settings) -> list[str] | None:
     return names
 
 
+def _split_patterns(values: list[str] | None) -> list[str] | None:
+    """Flatten repeated and comma-separated pattern flags. ``None`` means "not given".
+
+    繰り返し指定とカンマ区切りの両方を1つのパターンリストへ畳む。
+    ``None`` は「指定なし」を意味し、そのまま返す(設定ファイル側を上書きしない)。
+    """
+    if values is None:
+        return None
+    patterns: list[str] = []
+    for value in values:
+        patterns.extend(part for part in (p.strip() for p in value.split(",")) if part)
+    return patterns
+
+
+def toggle_picks(selected: set[int], tokens: list[str], total: int) -> bool:
+    """Apply one round of toggle input, mutating ``selected``.
+
+    Numbers toggle the corresponding row (1-based, as printed); ``a`` selects
+    everything, ``n`` clears it. Tokens are applied in order and an
+    unintelligible one returns ``False`` with the changes made so far kept,
+    matching the warning the caller prints.
+
+    選択リストのトグル入力を1回分適用する(``selected`` は直接書き換わる)。
+    番号は表示どおりの1始まりで対応する行をトグルし、``a`` は全選択、``n`` は
+    全解除。トークンは順に適用され、解釈できないものに当たった時点でそれまでの
+    変更を保持したまま ``False`` を返す(呼び出し側の警告文言と対応させている)。
+    """
+    for token in tokens:
+        lowered = token.lower()
+        if lowered == "a":
+            selected.update(range(total))
+            continue
+        if lowered == "n":
+            selected.clear()
+            continue
+        try:
+            index = int(token) - 1
+        except ValueError:
+            return False
+        if not 0 <= index < total:
+            return False
+        if index in selected:
+            selected.discard(index)
+        else:
+            selected.add(index)
+    return True
+
+
+def _interactively_pick_models(
+    names: list[str],
+    *,
+    preselected: set[str],
+    use_cloud_suffix: bool,
+) -> list[str] | None:
+    """Let the user toggle rows by number. Returns the chosen bases, ``None`` when aborted.
+
+    行番号のトグルでユーザーに登録対象を選ばせる。中止なら ``None``。
+    """
+    from rich.table import Table
+
+    from .models import cloud_model_name, normalize_model_name
+
+    if not sys.stdin.isatty():
+        console.print(f"[red]{t('cli.models.pick.no_tty')}[/red]")
+        raise SystemExit(1)
+    selected = {i for i, name in enumerate(names) if normalize_model_name(name) in preselected}
+
+    def render() -> None:
+        table = Table(title=t("cli.models.pick.title"))
+        table.add_column("#", justify="right", style="dim")
+        table.add_column("")
+        table.add_column(t("cli.models.col.model"), style="cyan", no_wrap=True)
+        for i, base in enumerate(names):
+            display = cloud_model_name(base) if use_cloud_suffix else base
+            mark = "[green]\u2714[/green]" if i in selected else "[dim]-[/dim]"
+            table.add_row(str(i + 1), mark, display)
+        console.print(table)
+
+    console.print(t("cli.models.pick.howto"))
+    while True:
+        console.clear()
+        render()
+        answer = console.input("[bold]>[/bold] ").strip()
+        tokens = answer.split()
+        if not tokens:
+            return [names[i] for i in sorted(selected)]
+        if tokens[0].lower() == "q":
+            return None
+        if not toggle_picks(selected, tokens, len(names)):
+            console.print(f"[yellow]{t('cli.models.pick.invalid', text=answer)}[/yellow]")
+
+
 def _run_models(args: argparse.Namespace) -> None:
     """Show the Ollama Cloud models, and optionally register them with Claude Code.
 
@@ -195,6 +295,8 @@ def _run_models(args: argparse.Namespace) -> None:
     from .models import (
         SETTINGS_PICKER_KEY,
         cloud_model_name,
+        read_settings,
+        registered_picker_models,
         select_picker_models,
         sync_model_picker,
     )
@@ -205,12 +307,49 @@ def _run_models(args: argparse.Namespace) -> None:
         # コマンドラインの指定は設定ファイルより優先される(serveと同じ方針)。
         # The command line wins over the config file, as it does for serve.
         picker = picker.model_copy(update={"settings_path": str(args.settings)})
+    include = _split_patterns(args.include)
+    if include is not None:
+        picker = picker.model_copy(update={"include": include})
+    exclude = _split_patterns(args.exclude)
+    if exclude is not None:
+        picker = picker.model_copy(update={"exclude": exclude})
 
     names = _fetch_ollama_models(settings)
     if names is None:
         raise SystemExit(1)
 
-    selected = set(select_picker_models(names, picker))
+    if args.pick:
+        # 選択の初期値は「現在 settings.json の modelPicker に登録済みのもの」。
+        # このツールは状態ファイルを持たない設計なので、settings.json 自身が
+        # 記憶領域。繰り返し実行しても前回の選好が維持される。
+        # The rows already in the settings file's modelPicker seed the
+        # selection: this tool holds no state file, so settings.json itself is
+        # the memory, and re-running keeps the previous choice.
+        preselected: set[str] = set()
+        try:
+            preselected = registered_picker_models(
+                read_settings(Path(picker.settings_path).expanduser())
+            )
+        except (OSError, ValueError):
+            pass
+        picked = _interactively_pick_models(
+            names, preselected=preselected, use_cloud_suffix=picker.use_cloud_suffix
+        )
+        if picked is None:
+            console.print(f"[yellow]{t('cli.models.pick.cancelled')}[/yellow]")
+            raise SystemExit(0)
+        # 対話で選んだ集合がそのまま対象になる。include/exclude のフィルタは
+        # バイパスする(選択自体がフィルタであり、重ねると「選んだのに書かれない」
+        # となる)。overrides や extended_context はパターン指定のまま有効。
+        # What was picked is exactly what gets a row, so the include/exclude
+        # filters are bypassed - stacking them would write less than was picked.
+        # Pattern-based overrides and extended_context stay in effect.
+        picker = picker.model_copy(update={"include": [], "exclude": []})
+        sync_models = picked
+    else:
+        sync_models = names
+
+    selected = set(select_picker_models(sync_models, picker))
     table = Table(title=t("cli.models.table.title"))
     table.add_column(t("cli.models.col.model"), style="cyan", no_wrap=True)
     table.add_column(t("cli.models.col.discovered"), style="dim", no_wrap=True)
@@ -244,6 +383,10 @@ def _run_models(args: argparse.Namespace) -> None:
         console.print(f"[dim]{t('cli.models.picker.hint')}[/dim]")
         return
 
+    if args.pick and not selected:
+        console.print(f"[yellow]{t('cli.models.pick.empty')}[/yellow]")
+        raise SystemExit(0)
+
     # 空のまま書き込むと /model からOllamaの行が消えるだけなので、警告して止める。
     # Writing an empty list would merely strip every Ollama row from /model, so
     # warn and stop rather than doing it silently.
@@ -258,7 +401,7 @@ def _run_models(args: argparse.Namespace) -> None:
     # is the user's own settings file, and an unexplained failure there turns
     # straight into manual investigation.
     try:
-        path, options, backup = sync_model_picker(names, picker, dry_run=args.dry_run)
+        path, options, backup = sync_model_picker(sync_models, picker, dry_run=args.dry_run)
     except (OSError, ValueError, TypeError) as exc:
         target = Path(picker.settings_path).expanduser()
         console.print(f"[red]{t('cli.models.error.settings', path=target, error=exc)}[/red]")

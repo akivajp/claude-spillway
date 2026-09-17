@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from claude_spillway.backends import ProxyBackends
+from claude_spillway.cli import _split_patterns, toggle_picks
 from claude_spillway.config import Settings
 from claude_spillway.models import (
     SETTINGS_PICKER_KEY,
@@ -22,6 +23,7 @@ from claude_spillway.models import (
     is_reserved_name,
     normalize_model_name,
     parse_ollama_models,
+    registered_picker_models,
     sync_model_picker,
 )
 from claude_spillway.proxy_app import create_app
@@ -418,3 +420,51 @@ def test_sync_model_picker_creates_a_missing_settings_file(tmp_path: Path) -> No
 
     assert backup is None
     assert json.loads(target.read_text(encoding="utf-8"))[SETTINGS_PICKER_KEY]["options"] == options
+
+
+# --- interactive selection ------------------------------------------------
+
+
+def test_toggle_picks_numbers_and_all_none() -> None:
+    selected: set[int] = {0}
+    assert toggle_picks(selected, ["1", "3"], 5)
+    # Toggling 1 again removes row 1; 3 was added.
+    # 1 をもう一度入れると行1が外れ、3 は追加された側。
+    assert selected == {2}
+    assert toggle_picks(selected, ["a"], 5)
+    assert selected == {0, 1, 2, 3, 4}
+    assert toggle_picks(selected, ["N"], 5)
+    assert selected == set()
+
+
+def test_toggle_picks_keeps_changes_before_a_bad_token() -> None:
+    selected: set[int] = {0}
+    # Out-of-range and non-numeric tokens are rejected whole-token, and the
+    # changes made before them survive, matching the warning the loop prints.
+    # 範囲外・非数値のトークンはそのトークンだけを捨て、それまでの変更は残る。
+    # これはループが表示する警告文言と対応している。
+    assert not toggle_picks(selected, ["2", "0"], 5)
+    assert selected == {0, 1}
+    assert not toggle_picks(selected, ["x"], 5)
+    assert selected == {0, 1}
+
+
+def test_split_patterns_flattens_repeats_and_commas() -> None:
+    assert _split_patterns(None) is None
+    assert _split_patterns(["glm-*"]) == ["glm-*"]
+    assert _split_patterns(["glm-*,gpt-*", " kimi-* "]) == ["glm-*", "gpt-*", "kimi-*"]
+
+
+def test_registered_picker_models_reads_back_what_was_written(tmp_path: Path) -> None:
+    target = tmp_path / "settings.json"
+    config = _settings(picker={"settings_path": str(target)}).direct_models.picker
+    sync_model_picker(["glm-5.3-flash", "gemma4:31b"], config)
+
+    written = json.loads(target.read_text(encoding="utf-8"))
+    # Suffixes and the [1m] marker are all normalised away, so a row can be
+    # matched back to the discovered base name.
+    # サフィックスも [1m] 印も正規化で取り除かれるため、行を取得時の素の名前へ
+    # 対応付けられる。
+    assert registered_picker_models(written) == {"glm-5.3-flash", "gemma4:31b"}
+    assert registered_picker_models({}) == set()
+    assert registered_picker_models({SETTINGS_PICKER_KEY: {"options": "broken"}}) == set()

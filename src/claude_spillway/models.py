@@ -331,6 +331,33 @@ def build_picker_options(models: list[str], config: ModelPickerConfig) -> list[d
     return options
 
 
+def registered_picker_models(settings: dict[str, Any]) -> set[str]:
+    """Normalized names of the models currently present in the picker rows.
+
+    Used to seed the interactive selection with what was registered last time,
+    so the settings file itself acts as the memory and this tool keeps no state
+    of its own.
+
+    ピッカーの行に現在登録されているモデルの、正規化済みの名前を返す。
+    対話選択の初期値として前回登録分を復元するために使う。settings.json 自身が
+    記憶領域であり、このツールは状態ファイルを持たない。
+    """
+    picker = settings.get(SETTINGS_PICKER_KEY)
+    if not isinstance(picker, dict):
+        return set()
+    options = picker.get("options")
+    if not isinstance(options, list):
+        return set()
+    names: set[str] = set()
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        model = option.get("model")
+        if isinstance(model, str) and model.strip():
+            names.add(normalize_model_name(model))
+    return names
+
+
 def read_settings(path: Path) -> dict[str, Any]:
     """Load Claude Code's settings file, or ``{}`` when it does not exist yet.
 

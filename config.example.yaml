@@ -171,7 +171,11 @@ direct_models:
     # true にすると /model から組み込みのClaudeモデルが消える。通常は不要。
     replace_built_in_options: false
     # fnmatch patterns over the names Ollama lists. Empty include = all.
+    # `models --sync-picker --pick` (interactive) and `models --include/-exclude`
+    # (repeatable or comma-separated) override these without editing this file.
     # Ollamaが返す名前に対する fnmatch パターン。include が空なら全件。
+    # `models --sync-picker --pick`(対話選択)や `models --include/--exclude`
+    # (繰り返し・カンマ区切り可)で、このファイルを編集せずに上書きできる。
     include: []
     exclude: []
     # fnmatch patterns whose rows get Claude Code's [1m] marker, so it manages a

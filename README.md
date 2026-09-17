@@ -165,9 +165,18 @@ are never diverted whatever the listing or your config says.
 To get them into the `/model` list rather than having to type the name:
 
 ```bash
-claude-spillway models                 # what Ollama Cloud serves right now
-claude-spillway models --sync-picker   # add them to Claude Code's /model list
+claude-spillway models                         # what Ollama Cloud serves right now
+claude-spillway models --sync-picker           # add them to /model, subject to the config filters
+claude-spillway models --sync-picker --pick    # choose which ones, interactively
 ```
+
+Twenty rows at once is a lot to look at, and most models are ones you will
+never open. `--pick` shows a checkbox list you toggle by row number (`a` =
+all, `n` = none, `Enter` = confirm, `q` = cancel). The list starts from what
+the settings file already holds, so re-running it keeps your earlier choice —
+this tool keeps no state of its own, the settings file is the memory. For the
+scripted (non-TTY) case, `--include` / `--exclude` take fnmatch patterns,
+repeatable or comma-separated, and override the config file's filters.
 
 `--sync-picker` writes the `modelPicker` key of `~/.claude/settings.json` (the
 path, filters and labels all come from `direct_models.picker` in your config).

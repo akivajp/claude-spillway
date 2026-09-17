@@ -134,6 +134,54 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Claude Code settings file to update (overrides the config file)",
         "ja": "書き換える対象のClaude Code設定ファイル(設定ファイルを上書き)",
     },
+    "cli.models.pick": {
+        "en": "Choose interactively which models get a /model row (use together with --sync-picker)",
+        "ja": "どのモデルを /model へ登録するか対話的に選ぶ(--sync-picker と併用)",
+    },
+    "cli.models.include": {
+        "en": (
+            "fnmatch pattern of models to register; may be repeated or comma-separated "
+            "(overrides the config file)"
+        ),
+        "ja": (
+            "登録対象とするモデルの fnmatch パターン。繰り返しまたはカンマ区切りで"
+            "指定可(設定ファイルを上書き)"
+        ),
+    },
+    "cli.models.exclude": {
+        "en": "fnmatch pattern of models to exclude; repeat or comma-separate like --include",
+        "ja": "登録対象から外すモデルの fnmatch パターン。--include と同様に指定可",
+    },
+    "cli.models.pick.title": {
+        "en": "Models to register with /model",
+        "ja": "/model に登録するモデル",
+    },
+    "cli.models.pick.howto": {
+        "en": (
+            "Enter row numbers to toggle (space-separated): a = all, n = none, "
+            "Enter = confirm, q = cancel"
+        ),
+        "ja": (
+            "切り替える行番号をスペース区切りで入力: a = 全選択, n = 全解除, "
+            "Enter = 確定, q = 中止"
+        ),
+    },
+    "cli.models.pick.invalid": {
+        "en": "input not understood: {text} (selections made so far are kept)",
+        "ja": "解釈できない入力です: {text} (ここまでの選択は保持されます)",
+    },
+    "cli.models.pick.cancelled": {
+        "en": "cancelled; nothing was written.",
+        "ja": "中止しました。書き込みは行われていません。",
+    },
+    "cli.models.pick.empty": {
+        "en": "nothing selected; the settings file was left untouched.",
+        "ja": "何も選択されていません。設定ファイルは変更していません。",
+    },
+    "cli.models.pick.no_tty": {
+        "en": "--pick needs an interactive terminal. Use --include/--exclude instead.",
+        "ja": "--pick には対話端末が必要です。代わりに --include/--exclude を使ってください。",
+    },
     "cli.models.dry_run": {
         "en": "Show what would be written without touching the settings file",
         "ja": "設定ファイルを書き換えず、書き込まれる内容だけを表示する",

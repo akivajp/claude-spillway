@@ -76,9 +76,19 @@ Ollama Cloudには、ドキュメント化された公式のquota APIが**依然
 毎回名前を打つ代わりに、`/model` の一覧へ載せるには次のようにします。
 
 ```bash
-claude-spillway models                 # Ollama Cloudが現在提供しているモデル
-claude-spillway models --sync-picker   # Claude Codeの /model 一覧へ登録する
+claude-spillway models                         # Ollama Cloudが現在提供しているモデル
+claude-spillway models --sync-picker           # 設定のフィルタに従って /model へ登録
+claude-spillway models --sync-picker --pick    # 登録するものを対話的に選ぶ
 ```
+
+20件が一括で並ぶと見づらく、ほとんどは開くことの無いモデルでしょう。`--pick` を
+付けると行番号で切り替えるチェックリストが出ます(`a` = 全選択、`n` = 全解除、
+Enter = 確定、`q` = 中止)。一覧の初期状態は設定ファイルに現在登録されている
+ものに合わされるため、繰り返し実行しても前回の選択が維持されます。このツールは
+状態ファイルを持たない設計であり、settings.json 自身が記憶領域です。対話端末が
+無い環境(スクリプト内など)には `--include` / `--exclude` を使います。fnmatch
+パターンを受け取り、繰り返しまたはカンマ区切りで指定でき、設定ファイルの
+フィルタを上書きします。
 
 `--sync-picker` は `~/.claude/settings.json` の `modelPicker` キーを書き換えます(パス・フィルタ・ラベルはいずれも設定ファイルの `direct_models.picker` から取ります)。同ファイルの他のキーには触れず、書き換え前の内容は同じ場所に退避します。Claude Codeを再起動すれば一覧に出ます。
 
