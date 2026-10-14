@@ -542,4 +542,128 @@ async def test_a_429_that_still_reports_headroom_is_not_exhaustion(settings: Set
     assert app.state.tracker.mode is BackendMode.ANTHROPIC
     assert calls["ollama"] == 0
     await app.state.recovery_probe.stop()
+
+
+#: ollama.com の設定ページから読み取り対象の要素だけを残したもの。
+#: The ollama.com settings page, trimmed to the elements that are read.
+_OLLAMA_SETTINGS_PAGE = """
+<div data-usage-track="" aria-label="Session usage 10% used"></div>
+<div class="text-xs local-time" data-time="2026-10-14T15:00:00Z">Resets in 4 hours.</div>
+<div data-usage-track="" aria-label="Weekly usage 20% used">
+  <button type="button" data-usage-segment="" data-model="glm-5.3-flash" data-requests="157"></button>
+</div>
+<div class="text-xs local-time" data-time="2026-10-19T00:00:00Z">Resets in 4 days.</div>
+"""
+
+
+def _ollama_web_backends(settings: Settings, page_handler) -> ProxyBackends:
+    """設定ページへの応答だけを差し替えたバックエンドを作る。
+
+    Backends whose Ollama side answers the settings page with ``page_handler``.
+    """
+
+    def ollama_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/settings":
+            return page_handler(request)
+        return _ollama_messages_handler(request)
+
+    return ProxyBackends(
+        settings,
+        anthropic_transport=httpx.MockTransport(lambda request: httpx.Response(404)),
+        ollama_transport=httpx.MockTransport(ollama_handler),
+    )
+
+
+async def test_session_cookie_reads_quota_from_the_settings_page(settings: Settings) -> None:
+    """With a session cookie, utilization and exact resets come from /settings.
+
+    セッションCookieがあれば、使用率と正確なリセット時刻を /settings から読むこと。
+    ページは間隔を空けて読み、毎ティックは叩かないこと。
+    """
+    settings.ollama.session_cookie = "__Secure-session=abc"
+    calls = {"page": 0}
+
+    def page_handler(request: httpx.Request) -> httpx.Response:
+        calls["page"] += 1
+        # 「名前=値」で設定しても、Cookieヘッダーは1組だけになる
+        # Pasting "name=value" still yields a single cookie pair
+        assert request.headers.get("cookie") == "__Secure-session=abc"
+        return httpx.Response(200, text=_OLLAMA_SETTINGS_PAGE)
+
+    backends = _ollama_web_backends(settings, page_handler)
+    app = create_app(settings, backends=backends)
+    probe = app.state.recovery_probe
+    probe.capture_auth_headers({"x-api-key": "sk-ant-test"})
+
+    await probe._probe_once()
+    await probe._probe_once()
+    assert calls["page"] == 1
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        data = (await client.get("/_spillway/status")).json()["ollama"]
+    assert data["session_utilization"] == pytest.approx(0.1)
+    assert data["weekly_utilization"] == pytest.approx(0.2)
+    assert data["session_reset"] is not None
+    assert data["weekly_reset"] is not None
+    assert data["usage_problem"] is None
+    await backends.aclose()
+
+
+async def test_expired_session_cookie_is_reported_once(settings: Settings) -> None:
+    """A bounce to sign-in is reported as session_expired and not retried.
+
+    サインインへの転送は session_expired として報告し、以後は読みに行かないこと。
+    """
+    settings.ollama.session_cookie = "stale"
+    settings.ollama.usage_page_interval_seconds = 0.0
+    calls = {"page": 0}
+
+    def page_handler(request: httpx.Request) -> httpx.Response:
+        calls["page"] += 1
+        return httpx.Response(303, headers={"location": "https://ollama.com/signin"})
+
+    backends = _ollama_web_backends(settings, page_handler)
+    app = create_app(settings, backends=backends)
+    probe = app.state.recovery_probe
+    probe.capture_auth_headers({"x-api-key": "sk-ant-test"})
+
+    await probe._probe_once()
+    await probe._probe_once()
+    assert calls["page"] == 1
+    assert probe.ollama_usage_problem == "session_expired"
+    assert app.state.tracker.ollama_snapshot is None
+    await backends.aclose()
+
+
+async def test_usage_api_without_utilization_is_reported(settings: Settings) -> None:
+    """Without a cookie, the post-2026-10 API shape is reported, not ignored silently.
+
+    Cookie未設定で、2026-10以降の形(リクエスト数のみ)が返る場合は黙って捨てず
+    理由を報告し、以後はエンドポイントを叩かないこと。
+    """
+    calls = {"usage": 0}
+
+    def ollama_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/usage":
+            calls["usage"] += 1
+            return httpx.Response(
+                200, json={"range": "7d", "scope": "self", "totals": {"request_count": 473}, "buckets": []}
+            )
+        return _ollama_messages_handler(request)
+
+    backends = ProxyBackends(
+        settings,
+        anthropic_transport=httpx.MockTransport(lambda request: httpx.Response(404)),
+        ollama_transport=httpx.MockTransport(ollama_handler),
+    )
+    app = create_app(settings, backends=backends)
+    probe = app.state.recovery_probe
+    probe.capture_auth_headers({"x-api-key": "sk-ant-test"})
+
+    await probe._probe_once()
+    await probe._probe_once()
+    assert calls["usage"] == 1
+    assert probe.ollama_usage_problem == "api_no_utilization"
     await backends.aclose()

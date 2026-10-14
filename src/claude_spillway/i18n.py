@@ -355,6 +355,21 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "monitor.row.weekly_window": {"en": "weekly window", "ja": "週次窓"},
     "monitor.row.consecutive_failures": {"en": "consecutive failures", "ja": "連続失敗数"},
     "monitor.row.top_models": {"en": "most used (weekly)", "ja": "利用の多いモデル(週次)"},
+    "monitor.row.usage_problem": {"en": "quota reading", "ja": "quota取得"},
+    # Why Ollama's quota cannot be read; keyed by recovery.OLLAMA_PROBLEM_CODES.
+    # Ollamaのquotaを読めない理由。recovery.OLLAMA_PROBLEM_CODES と対応する。
+    "monitor.ollama.problem.session_expired": {
+        "en": "ollama.com session expired: update OLLAMA_SESSION_COOKIE and restart",
+        "ja": "ollama.comのセッションが失効しました。OLLAMA_SESSION_COOKIEを更新して再起動してください",
+    },
+    "monitor.ollama.problem.page_not_understood": {
+        "en": "the ollama.com usage page could not be read (its layout may have changed)",
+        "ja": "ollama.comの使用量ページを解釈できません(ページ構成が変わった可能性があります)",
+    },
+    "monitor.ollama.problem.api_no_utilization": {
+        "en": "Ollama's API no longer reports quota: set ollama.session_cookie",
+        "ja": "OllamaのAPIはquotaを返さなくなりました。ollama.session_cookieを設定してください",
+    },
     "monitor.ollama.no_reset": {
         "en": "Ollama reports no reset times",
         "ja": "Ollamaはリセット時刻を返しません",
@@ -415,8 +430,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "ja": "recovery閾値: ここまで回復するとAnthropicへ戻る",
     },
     "dashboard.ollama.sub": {
-        "en": "account-wide usage, read from Ollama's usage endpoint",
-        "ja": "Ollamaの使用量エンドポイントから読んだアカウント全体の使用状況",
+        "en": "account-wide usage, read from ollama.com",
+        "ja": "ollama.comから読んだアカウント全体の使用状況",
     },
     "dashboard.ollama.estimate_note": {
         "en": (

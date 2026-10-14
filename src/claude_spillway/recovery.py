@@ -26,9 +26,11 @@ from .models import DirectModelRegistry, parse_ollama_models
 from .quota import (
     BackendMode,
     OllamaResetEstimator,
+    OllamaSnapshot,
     QuotaSnapshot,
     QuotaTracker,
     parse_ollama_usage,
+    parse_ollama_usage_page,
     parse_quota_headers,
     parse_usage_payload,
 )
@@ -38,6 +40,16 @@ logger = logging.getLogger("claude_spillway.recovery")
 # Headers stashed away while relaying, to be reused by the recovery probe.
 # 転送を横流しする際に一緒に保存しておく、回復確認プローブへ再利用するヘッダー。
 _CAPTURED_HEADER_NAMES = ("authorization", "x-api-key", "anthropic-version")
+
+#: Reasons Ollama's utilization may be unreadable, as reported in the status.
+#: ステータスで報告する、Ollamaの使用率を読めない理由。
+#:   session_expired     - the settings page bounced us to sign-in (cookie stale)
+#:                         設定ページがサインインへ転送した(Cookie失効)
+#:   page_not_understood - the settings page no longer has the meters we read
+#:                         設定ページに読み取り対象のメーターが無い(形式変更)
+#:   api_no_utilization  - no cookie, and the API-key endpoint has no utilization
+#:                         Cookie未設定で、APIキーのエンドポイントは使用率を返さない
+OLLAMA_PROBLEM_CODES = ("session_expired", "page_not_understood", "api_no_utilization")
 
 
 class RecoveryProbe:
@@ -77,6 +89,14 @@ class RecoveryProbe:
         # Ollamaはリセット時刻を返さないため、利用率の上昇から上限値を推定する。
         # Ollama reports no reset times, so bound them from utilization rises.
         self._ollama_reset_estimator = OllamaResetEstimator()
+        # 設定ページを最後に読みに行った時刻。ページは毎ティック読まず間隔を空ける。
+        # When the settings page was last fetched; it is not read on every tick.
+        self._ollama_page_fetched_at: float | None = None
+        #: Why Ollama's utilization cannot be read right now, or ``None`` if it
+        #: can. One of :data:`OLLAMA_PROBLEM_CODES`; shown by the monitor views.
+        #: Ollamaの使用率を現在読めない理由。読めていれば ``None``。
+        #: 値は :data:`OLLAMA_PROBLEM_CODES` のいずれかで、監視画面に表示される。
+        self.ollama_usage_problem: str | None = None
 
     def capture_auth_headers(self, headers: dict[str, str]) -> None:
         """Stash the auth headers seen while relaying normally (for probing).
@@ -231,41 +251,122 @@ class RecoveryProbe:
             logger.info("ollama cloud models: %d known (%s)", len(names), ", ".join(names))
 
     async def _refresh_ollama_usage(self) -> None:
-        """Read Ollama's own usage endpoint and hand it to the tracker.
+        """Read Ollama's usage and hand it to the tracker.
 
-        Failures are quiet: without this reading the proxy simply routes the way
-        it always did, so it is never worth interrupting the loop over.
+        With a session cookie the account's settings page is read (it alone
+        carries utilization and reset times since 2026-10); without one, the
+        API-key usage endpoint is tried. Failures are quiet: without this
+        reading the proxy simply routes the way it always did, so it is never
+        worth interrupting the loop over.
 
-        Ollama自身の使用量エンドポイントを読み、トラッカーへ渡す。
-        失敗しても静かに諦める。この値が無くても従来どおりのルーティングになる
-        だけなので、ループを止めてまで扱う価値はない。
+        Ollamaの使用状況を読み、トラッカーへ渡す。
+        セッションCookieがあればアカウントの設定ページを読む(2026-10以降、使用率と
+        リセット時刻を載せているのはここだけ)。無ければAPIキーの使用量エンドポイントを
+        試す。失敗しても静かに諦める。この値が無くても従来どおりのルーティングに
+        なるだけなので、ループを止めてまで扱う価値はない。
+        """
+        if self._settings.ollama.session_cookie.strip():
+            snapshot = await self._read_ollama_usage_page()
+        else:
+            snapshot = await self._read_ollama_usage_api()
+        if snapshot is None or snapshot.remaining_ratio() is None:
+            return
+        if snapshot.session_reset is None or snapshot.weekly_reset is None:
+            # 実測のリセット時刻が無い場合に限り、利用率の動きから上限値を推定する。
+            # 表示専用であり、ルーティング判断は実測値のみで行われる。
+            # Only without measured resets, bound them from utilization movement.
+            # Display-only: routing decisions still run on the measured values alone.
+            snapshot = self._ollama_reset_estimator.update(snapshot)
+        self._tracker.observe_ollama(snapshot)
+
+    async def _read_ollama_usage_page(self) -> OllamaSnapshot | None:
+        """Read utilization and reset times from the ollama.com settings page.
+
+        Fetched at most once per ``usage_page_interval_seconds``, since this is
+        a page meant for people. An expired session is reported once and then
+        left alone: the cookie only changes with a restart, so retrying is futile.
+
+        ollama.comの設定ページから使用率とリセット時刻を読む。
+        人が見るためのページなので、``usage_page_interval_seconds`` に1回までしか
+        読まない。セッション失効は1回だけ報告し、以後は読みに行かない。Cookieは
+        再起動しないと変わらないため、再試行しても無駄である。
+        """
+        if self.ollama_usage_problem == "session_expired":
+            return None
+        now = time.time()
+        interval = self._settings.ollama.usage_page_interval_seconds
+        if self._ollama_page_fetched_at is not None and now - self._ollama_page_fetched_at < interval:
+            return None
+        self._ollama_page_fetched_at = now
+        try:
+            response = await self._backends.fetch_ollama_usage_page()
+        except httpx.HTTPError as exc:
+            # 一時的な障害とみなし、次の間隔で再試行する。
+            # Transient: try again after the next interval.
+            logger.debug("ollama usage page request failed: %s", exc)
+            return None
+        if response.is_redirect or response.status_code in (401, 403):
+            # サインインへの転送 = セッションCookieが失効している。
+            # A bounce to sign-in means the session cookie has gone stale.
+            self.ollama_usage_problem = "session_expired"
+            logger.warning(
+                "ollama session cookie rejected (HTTP %s); update OLLAMA_SESSION_COOKIE "
+                "and restart to read Ollama's quota again",
+                response.status_code,
+            )
+            return None
+        if response.status_code != 200:
+            logger.debug("ollama usage page returned HTTP %s", response.status_code)
+            return None
+        snapshot = parse_ollama_usage_page(response.text)
+        if snapshot is None:
+            # ページの形が変わった可能性がある。直る可能性もあるため止めはしないが、
+            # 毎回ログを出さないよう、状態が変わったときだけ報告する。
+            # The page may have been redesigned. Keep trying in case it is
+            # transient, but only log when the state changes.
+            if self.ollama_usage_problem != "page_not_understood":
+                logger.warning("ollama usage page has no usage meters we can read; ignoring")
+            self.ollama_usage_problem = "page_not_understood"
+            return None
+        self.ollama_usage_problem = None
+        return snapshot
+
+    async def _read_ollama_usage_api(self) -> OllamaSnapshot | None:
+        """Read Ollama's API-key usage endpoint (no utilization since 2026-10).
+
+        APIキーで読めるOllamaの使用量エンドポイントを読む(2026-10以降は使用率を返さない)。
         """
         if self._ollama_usage_unavailable or not self._settings.ollama.api_key:
-            return
+            return None
         try:
             response = await self._backends.fetch_ollama_usage()
         except httpx.HTTPError as exc:
             logger.debug("ollama usage request failed: %s", exc)
-            return
+            return None
         if response.status_code != 200:
             if 400 <= response.status_code < 500 and response.status_code != 429:
                 self._ollama_usage_unavailable = True
                 logger.info("ollama usage endpoint unavailable (HTTP %s)", response.status_code)
-            return
+            return None
         try:
             snapshot = parse_ollama_usage(response.json())
         except (ValueError, AttributeError, TypeError) as exc:
             logger.info("ollama usage payload not understood (%s); ignoring", exc)
             self._ollama_usage_unavailable = True
-            return
+            return None
         if snapshot.remaining_ratio() is None:
-            return
-        # リセット時刻を返さないOllamaのために、利用率の動きから上限値を推定する。
-        # 表示専用であり、ルーティング判断は実測値のみで行われる。
-        # Ollama reports no reset times, so bound them from utilization movement.
-        # Display-only: routing decisions still run on the measured values alone.
-        snapshot = self._ollama_reset_estimator.update(snapshot)
-        self._tracker.observe_ollama(snapshot)
+            # 2026-10以降の形式(リクエスト数のみ)。再試行しても変わらないため以後試さず、
+            # 黙って捨てずに一度だけ理由を残す。
+            # The post-2026-10 shape (request counts only). Retrying will not
+            # change it, so stop polling and say why once instead of silently.
+            self._ollama_usage_unavailable = True
+            self.ollama_usage_problem = "api_no_utilization"
+            logger.warning(
+                "ollama usage endpoint reports no utilization; set ollama.session_cookie "
+                "to read Ollama's quota from the settings page"
+            )
+            return None
+        return snapshot
 
     async def _read_usage_endpoint(self) -> QuotaSnapshot | None:
         """Read quota from the OAuth usage endpoint. Returns ``None`` if unusable.

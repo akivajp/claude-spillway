@@ -61,6 +61,16 @@ OLLAMA_USAGE_PATH = "/api/usage"
 #: 同様にリクエスト数へ計上されない単なる読み取りである。
 OLLAMA_TAGS_PATH = "/api/tags"
 
+#: The ollama.com settings page (its Usage tab), which renders the session and
+#: weekly utilization together with exact reset times. Needs a browser session.
+#: ollama.comの設定ページ(Usageタブ)。セッション窓・週次窓の使用率と正確な
+#: リセット時刻がサーバー側で描画される。ブラウザのログインセッションが必要。
+OLLAMA_USAGE_PAGE_PATH = "/settings"
+
+#: Name of the session cookie ollama.com issues on sign-in.
+#: ollama.comがログイン時に発行するセッションCookieの名前。
+OLLAMA_SESSION_COOKIE_NAME = "__Secure-session"
+
 
 def _filter_headers(headers: httpx.Headers) -> dict[str, str]:
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
@@ -234,6 +244,32 @@ class ProxyBackends:
                 "authorization": f"Bearer {self._settings.ollama.api_key}",
                 "accept": "application/json",
             },
+        )
+
+    async def fetch_ollama_usage_page(self) -> httpx.Response:
+        """Fetch the ollama.com settings page with the configured session cookie.
+
+        Redirects are deliberately not followed: an expired session answers with
+        a redirect to the sign-in page, and the caller needs to see that rather
+        than the sign-in page's 200.
+
+        設定済みのセッションCookieを付けてollama.comの設定ページを取得する。
+        リダイレクトはあえて追わない。セッションが失効しているとサインイン
+        ページへのリダイレクトが返るため、呼び出し側はサインインページの200では
+        なく、そのリダイレクト自体を見て判断する必要がある。
+        """
+        cookie = self._settings.ollama.session_cookie.strip()
+        # 「名前=値」の形で貼り付けられた場合も受け付ける。
+        # Also accept the cookie pasted as "name=value".
+        prefix = OLLAMA_SESSION_COOKIE_NAME + "="
+        cookie = cookie.removeprefix(prefix)
+        return await self._ollama_client.get(
+            OLLAMA_USAGE_PAGE_PATH,
+            headers={
+                "cookie": f"{OLLAMA_SESSION_COOKIE_NAME}={cookie}",
+                "accept": "text/html",
+            },
+            follow_redirects=False,
         )
 
     async def probe_anthropic(self, headers: dict[str, str], payload: dict[str, Any]) -> httpx.Response:

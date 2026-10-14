@@ -63,6 +63,10 @@ _DASHBOARD_LABELS: dict[str, str] = {
     "mark_recovery": "dashboard.mark.recovery",
     "ollama_sub": "dashboard.ollama.sub",
     "estimate_note": "dashboard.ollama.estimate_note",
+    "usage_problem": "monitor.row.usage_problem",
+    "problem_session_expired": "monitor.ollama.problem.session_expired",
+    "problem_page_not_understood": "monitor.ollama.problem.page_not_understood",
+    "problem_api_no_utilization": "monitor.ollama.problem.api_no_utilization",
     "waiting": "monitor.waiting.body",
     "thresholds": "monitor.footer.thresholds",
     "reset_in": "monitor.reset.in",
@@ -279,10 +283,10 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
                     "source": snapshot.source if snapshot else None,
                 },
                 "ollama": {
-                    # Account-wide usage, read from Ollama's own usage endpoint.
-                    # It reports no reset times, so those stay absent here.
-                    # Ollama自身の使用量エンドポイントから読んだアカウント全体の
-                    # 使用状況。リセット時刻は返らないためここにも含まれない。
+                    # Account-wide usage, read from the ollama.com settings page
+                    # (or, without a session cookie, Ollama's usage endpoint).
+                    # ollama.comの設定ページ(セッションCookie未設定時は使用量
+                    # エンドポイント)から読んだアカウント全体の使用状況。
                     "session_utilization": (
                         ollama_snapshot.session_utilization if ollama_snapshot else None
                     ),
@@ -301,6 +305,13 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
                     "estimated_weekly_reset": (
                         ollama_snapshot.estimated_weekly_reset if ollama_snapshot else None
                     ),
+                    # 設定ページから読んだ実測のリセット時刻。推定値より優先して表示する。
+                    # Measured resets from the settings page; shown in preference to estimates.
+                    "session_reset": ollama_snapshot.session_reset if ollama_snapshot else None,
+                    "weekly_reset": ollama_snapshot.weekly_reset if ollama_snapshot else None,
+                    # 使用率を読めない理由(Cookie失効など)。読めていれば None。
+                    # Why utilization cannot be read (stale cookie, ...), else None.
+                    "usage_problem": recovery_probe.ollama_usage_problem,
                     "weekly_models": (
                         [{"name": n, "request_count": c} for n, c in ollama_snapshot.weekly_models]
                         if ollama_snapshot

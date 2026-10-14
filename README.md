@@ -81,27 +81,44 @@ which would be far worse than just missing a token count.
 Ollama Cloud still publishes **no documented quota API**
 ([ollama/ollama#15663](https://github.com/ollama/ollama/issues/15663),
 [#16448](https://github.com/ollama/ollama/issues/16448)), and its inference
-responses carry no rate-limit headers at all. But its own dashboard reads an
-undocumented `GET /api/usage`, which takes the same API key as inference and is
-not itself counted as a request — so claude-spillway polls that for the session
-and weekly utilization plus a per-model request count.
+responses carry no rate-limit headers at all. Until 2026-10 the undocumented
+`GET /api/usage` returned the session and weekly utilization for an API key, but
+it now returns request counts only. The quota (%) and **exact reset times** are
+only shown on the account's settings page (<https://ollama.com/settings>, Usage
+tab), which needs a signed-in browser session.
 
-Two caveats. It is undocumented, so a shape change degrades to "no data" rather
-than an error. And unlike Anthropic, **Ollama reports no reset times**, so
-nothing in this tool can tell you when an Ollama window turns over.
+To read it, give claude-spillway the value of the `__Secure-session` cookie:
+
+1. Sign in at <https://ollama.com/settings> in a browser.
+2. Open DevTools → Application (Storage) → Cookies → `https://ollama.com`, and
+   copy the value of `__Secure-session`.
+3. Set it where `serve` can read it, e.g. in the environment file used by the
+   service (single quotes, since the value may contain `=`):
+
+   ```bash
+   OLLAMA_SESSION_COOKIE='the-cookie-value'
+   ```
+
+The page is read every `ollama.usage_page_interval_seconds` (default 120s), not
+on every probe. The cookie expires about 90 days after sign-in; when it does, the
+TUI and dashboard say so and a warning is logged — update the value and restart.
+The page is not an API, so a redesign degrades to "no data" rather than an error.
+
+Without a cookie, Ollama's quota stays unknown and routing behaves as if Ollama
+had headroom (the `ollama_min_remaining_pct` guard cannot engage).
 
 ### About Ollama's reset times (estimated)
 
-No API reports them (see [.github/TODO.md](.github/TODO.md) for the full
-investigation), so the monitor estimates instead: utilization cannot fall until
-a window resets, so the first observed rise marks the start of a fresh window,
-and "that rise + the window's maximum length" (5h for session, 7d for weekly)
-is the latest the reset could have been. The estimate is an **upper bound**, not
-the truth, so the TUI prefixes it with a `~`.
+The settings page reports exact reset times. Only when a reading comes without
+them (the old `/api/usage` shape) does the monitor fall back to an estimate:
+utilization cannot fall until a window resets, so the first observed rise marks
+the start of a fresh window, and "that rise + the window's maximum length" (5h
+for session, 7d for weekly) is the latest the reset could have been. The
+estimate is an **upper bound**, not the truth, so it is prefixed with a `~`.
 
 Estimates are display-only. Routing decisions never read them -
-`burn_rate_balance` treats a window with an unknown reset as freshly started,
-which needs no estimate at all.
+`burn_rate_balance` uses the measured resets when it has them, and otherwise
+treats a window with an unknown reset as freshly started.
 
 The status endpoint and TUI still also report self-tracked counters (requests
 relayed, failures, last status code) covering only the traffic that passed
@@ -121,8 +138,8 @@ neither is critical:
 - `burn_rate_balance` — compare, per window, how much is left relative to how
   long the window still has to run (`remaining / (time to reset / window
   length)`), take the tightest window per backend, and prefer the side whose
-  tightest reading is better. A reset time we don't know (Ollama never reports
-  one) is assumed to be a window that just started — the most generous
+  tightest reading is better. A reset time we don't know (Ollama without a
+  session cookie) is assumed to be a window that just started — the most generous
   reading — so the unknown never manufactures urgency. `anthropic_priority_weight`
   (default 1.1) leans the comparison toward the Claude subscription you are
   already paying for; at parity it wins, and it needs to be ~9% worse before
@@ -317,6 +334,8 @@ If neither exists, claude-spillway starts on its built-in defaults. Key fields:
 | `anthropic.base_url` | `https://api.anthropic.com` | Anthropic API endpoint |
 | `ollama.base_url` | `https://ollama.com` | Ollama Cloud endpoint |
 | `ollama.api_key` | — | Ollama Cloud API key (supports `${ENV_VAR}`) |
+| `ollama.session_cookie` | — | `__Secure-session` cookie of a signed-in ollama.com browser; needed to read Ollama's quota |
+| `ollama.usage_page_interval_seconds` | `120.0` | How often the ollama.com settings page is read |
 | `quota.fallback_threshold_pct` | `10.0` | Remaining % below which we fail over |
 | `quota.recovery_threshold_pct` | `20.0` | Remaining % above which we switch back |
 | `quota.probe_interval_seconds` | `60.0` | How often the background probe refreshes the quota reading |

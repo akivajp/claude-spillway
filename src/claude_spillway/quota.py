@@ -5,10 +5,12 @@ Anthropicのレート制限ヘッダーを解析し、バックエンド切替�
 
 from __future__ import annotations
 
+import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
+from html.parser import HTMLParser
 from typing import Any
 
 import httpx
@@ -127,17 +129,18 @@ class QuotaSnapshot:
 
 @dataclass(frozen=True)
 class OllamaSnapshot:
-    """Ollama Cloud usage, read from the account's usage endpoint.
+    """Ollama Cloud usage, read from the account's settings page or usage endpoint.
 
     Ollama reports a session window and a weekly window as 0-1 utilization
-    ratios, plus a per-model request count. Unlike Anthropic it reports **no
-    reset times**, so anything that needs to know when a window turns over
-    cannot be answered for this backend.
+    ratios, plus a per-model request count. Only the settings page carries
+    reset times (``session_reset`` / ``weekly_reset``); the old usage endpoint
+    never did, which is what the ``estimated_*`` fields stand in for.
 
-    Ollama Cloudの使用状況(アカウントの使用量エンドポイントから取得)。
-    Ollamaはセッション窓と週次窓を0〜1の使用率で返し、モデル別リクエスト数も
-    併せて返す。Anthropicと違い**リセット時刻は返さない**ため、窓がいつ切り替わる
-    かを前提にした判断はこのバックエンドについては行えない。
+    Ollama Cloudの使用状況(アカウントの設定ページ、または使用量エンドポイントから
+    取得)。Ollamaはセッション窓と週次窓を0〜1の使用率で返し、モデル別リクエスト数も
+    併せて返す。リセット時刻(``session_reset`` / ``weekly_reset``)は設定ページにしか
+    載っておらず、旧来の使用量エンドポイントは一度も返さなかった。``estimated_*`` は
+    その代用として推定した値である。
     """
 
     session_utilization: float | None
@@ -159,6 +162,12 @@ class OllamaSnapshot:
     #: Anthropicの実測値と混同しないよう別フィールドにしている。
     estimated_session_reset: float | None = None
     estimated_weekly_reset: float | None = None
+    #: MEASURED reset times (epoch seconds), as rendered on the settings page.
+    #: ``None`` when the reading came from somewhere that does not report them.
+    #: 実測のリセット時刻(エポック秒)。設定ページに描画された値をそのまま使う。
+    #: リセット時刻を返さない取得元から読んだ場合は None。
+    session_reset: float | None = None
+    weekly_reset: float | None = None
 
     def remaining_ratio(self) -> float | None:
         """Return the tightest remaining ratio across the known windows.
@@ -247,11 +256,10 @@ class OllamaResetEstimator:
         if snapshot.weekly_utilization is not None:
             self._prev_weekly = snapshot.weekly_utilization
 
-        return OllamaSnapshot(
-            session_utilization=snapshot.session_utilization,
-            weekly_utilization=snapshot.weekly_utilization,
-            observed_at=snapshot.observed_at,
-            weekly_models=snapshot.weekly_models,
+        # replace() で他のフィールド(実測リセット時刻など)を落とさずに引き継ぐ。
+        # replace() carries every other field (measured resets included) over.
+        return replace(
+            snapshot,
             estimated_session_reset=session_reset,
             estimated_weekly_reset=weekly_reset,
         )
@@ -326,6 +334,124 @@ def _ratio(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return max(0.0, min(1.0, float(value)))
+
+
+#: Meter labels on the settings page. Each meter's track element carries an
+#: aria-label of the form "Session usage 1.6% used", which is what is read.
+#: 設定ページ上のメーターのlabel。各メーターのトラック要素は
+#: "Session usage 1.6% used" 形式の aria-label を持ち、それを読み取る。
+_OLLAMA_SESSION_METER = "Session usage"
+_OLLAMA_WEEKLY_METER = "Weekly usage"
+
+#: ``aria-label="Session usage 1.6% used"`` からlabelと百分率を取り出す。
+#: Pulls the label and the percentage out of that aria-label.
+_OLLAMA_METER_RE = re.compile(
+    rf"^({_OLLAMA_SESSION_METER}|{_OLLAMA_WEEKLY_METER})\s+([\d.]+)%\s+used$"
+)
+
+
+class _OllamaUsagePageParser(HTMLParser):
+    """Extract Ollama's usage meters from the settings page's server-rendered HTML.
+
+    The page is not a published API, so every attribute is read defensively and
+    a shape change degrades to missing fields. Only the handful of attributes
+    the meters carry is looked at; the rest of the page is ignored.
+
+    設定ページのサーバー側描画HTMLからOllamaの使用率メーターを取り出す。
+    ページは公開APIではないため全属性を防御的に読み、形が変われば該当欄が
+    欠けるだけに縮退する。参照するのはメーターが持つ少数の属性のみで、
+    ページの残りは無視する。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        #: メーターlabelごとの使用率(0〜1)。
+        #: Utilization (0-1) per meter label.
+        self.utilization: dict[str, float] = {}
+        #: メーターlabelごとのリセット時刻(エポック秒)。
+        #: Reset time (epoch seconds) per meter label.
+        self.reset: dict[str, float] = {}
+        #: 週次メーターのセグメントから取ったモデル別リクエスト数。
+        #: Per-model request counts, from the weekly meter's segments.
+        self.models: dict[str, int] = {}
+        # 直前に開いたトラック要素のメーターlabel。トラック内のセグメントと、
+        # その後に続くリセット時刻の要素を、どのメーターに帰属させるかに使う。
+        # The meter of the track most recently opened: segments inside it and
+        # the reset element that follows it belong to that meter.
+        self._current_meter: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = {name: value or "" for name, value in attrs}
+        if "data-usage-track" in attributes:
+            # トラック要素の aria-label から使用率を読む。
+            # Read the utilization off the track's aria-label.
+            match = _OLLAMA_METER_RE.match(attributes.get("aria-label", "").strip())
+            self._current_meter = match.group(1) if match else None
+            if match:
+                try:
+                    self.utilization[match.group(1)] = max(0.0, min(1.0, float(match.group(2)) / 100.0))
+                except ValueError:
+                    self._current_meter = None
+            return
+        if "data-usage-segment" in attributes:
+            # バー内のセグメントはモデル別の使用量。週次窓の分だけを採る。
+            # Segments inside a bar are per-model usage; keep the weekly ones.
+            if self._current_meter != _OLLAMA_WEEKLY_METER:
+                return
+            name = attributes.get("data-model", "")
+            raw_requests = attributes.get("data-requests", "")
+            if name and raw_requests.isdigit():
+                self.models[name] = int(raw_requests)
+            return
+        if "data-time" in attributes and "local-time" in attributes.get("class", "").split():
+            # メーター直後の local-time 要素が「Resets in N」であり、data-time に
+            # ISO 8601 (UTC) の正確な時刻を持つ。ページ後方の別の日時で上書き
+            # されないよう、メーターごとに最初の1つだけを採る。
+            # The local-time element after a meter is its "Resets in N", with the
+            # exact ISO 8601 (UTC) time in data-time. Only the first one per
+            # meter counts, so later dates on the page cannot overwrite it.
+            moment = parse_timestamp(attributes["data-time"])
+            if moment is not None and self._current_meter is not None:
+                self.reset.setdefault(self._current_meter, moment)
+
+    def snapshot(self, observed_at: float) -> OllamaSnapshot | None:
+        """Build the snapshot, or ``None`` when no meter was found.
+
+        スナップショットを作る。メーターが1つも見つからなければ ``None``。
+        """
+        if not self.utilization:
+            return None
+        models = sorted(self.models.items(), key=lambda item: item[1], reverse=True)
+        return OllamaSnapshot(
+            session_utilization=self.utilization.get(_OLLAMA_SESSION_METER),
+            weekly_utilization=self.utilization.get(_OLLAMA_WEEKLY_METER),
+            observed_at=observed_at,
+            weekly_models=tuple(models),
+            session_reset=self.reset.get(_OLLAMA_SESSION_METER),
+            weekly_reset=self.reset.get(_OLLAMA_WEEKLY_METER),
+        )
+
+
+def parse_ollama_usage_page(html: str, observed_at: float | None = None) -> OllamaSnapshot | None:
+    """Read Ollama's usage meters out of the settings page's HTML.
+
+    Returns ``None`` when the page carries no usable meter, which is how a
+    redirect to the sign-in page (expired session) or a redesign shows up.
+
+    設定ページのHTMLからOllamaの使用率メーターを読み取る。使用可能なメーターが
+    無い場合(セッション失効によるサインインへのリダイレクト、デザイン変更)は
+    ``None`` を返す。
+    """
+    parser = _OllamaUsagePageParser()
+    try:
+        parser.feed(html)
+    except Exception:  # noqa: BLE001  # html.parser は奇形入力で例外を投げうる
+        # 解析に失敗しても「データなし」で縮退させる。ページの性質上、
+        # 奇形HTMLでパーサが落ちるよりも無い方がマシである。
+        # A parse failure degrades to "no data"; for a scraped page that beats
+        # crashing on malformed markup.
+        return None
+    return parser.snapshot(observed_at if observed_at is not None else time.time())
 
 
 def _parse_float(headers: httpx.Headers, name: str) -> float | None:
@@ -743,7 +869,7 @@ class QuotaTracker:
         For each window compute ``remaining / (time left until reset / window
         length)`` and adopt the smallest - the window that will run dry soonest
         relative to how long it still has to last. A reset time we do not know
-        (Ollama never reports one) means assuming the window just started, i.e.
+        (Ollama without a session cookie) means assuming the window just started, i.e.
         the most generous reading, so an unknown never manufactures urgency.
 
         Anthropic gets a weight above 1.0 so that, at parity, we still favour
@@ -751,7 +877,7 @@ class QuotaTracker:
 
         各窓について「残量 ÷ (リセットまでの時間 ÷ 窓の全長)」を求め、最小値
         (相対的に最も早く枯渇する窓)を採用する。リセット時刻が不明な場合
-        (Ollamaは常にこれに該当)は「窓が始まったばかり」と仮定して最も甘く見積もる。
+        (セッションCookie未設定時のOllama)は「窓が始まったばかり」と仮定して最も甘く見積もる。
         不明であることを根拠に焦りを作らないためである。
 
         Anthropic側には1.0超の重みを掛ける。拮抗した場合でも、支払っている
@@ -765,14 +891,16 @@ class QuotaTracker:
             weekly=self._anthropic_window(anthropic_5h=False),
             weekly_reset=self.last_snapshot.reset_7d,
         )
-        # Ollamaはリセット時刻を返さないため、両窓とも「始まったばかり」扱いになる。
-        # Ollama never reports resets, so both windows take the generous reading.
+        # 実測のリセット時刻(設定ページ由来)だけを使う。推定値は表示専用であり、
+        # 無い場合は「始まったばかり」扱いになる。
+        # Only measured resets (from the settings page) count; estimates are
+        # display-only, and a missing reset takes the generous reading.
         ollama_snap = self.ollama_snapshot
         ollama = self._burn_rate(
             session=None if ollama_snap.session_utilization is None else 1.0 - ollama_snap.session_utilization,
-            session_reset=None,
+            session_reset=ollama_snap.session_reset,
             weekly=ollama_snap.weekly_remaining_ratio(),
-            weekly_reset=None,
+            weekly_reset=ollama_snap.weekly_reset,
         )
         if anthropic is None or ollama is None:
             return None

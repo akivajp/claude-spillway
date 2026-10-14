@@ -25,6 +25,17 @@ ollama:
   # Ollama Cloud API key. Issue one at https://ollama.com/settings/keys .
   # Ollama CloudのAPIキー。 https://ollama.com/settings/keys で発行してください。
   api_key: ${OLLAMA_API_KEY}
+  # Value of the __Secure-session cookie from a browser signed in to ollama.com
+  # (optional). The quota (%) and reset times are only shown on the account's
+  # settings page, so without this the Ollama quota stays unknown. Expires
+  # roughly 90 days after sign-in.
+  # ollama.comにログインしたブラウザの __Secure-session Cookieの値(任意)。
+  # quota(%)とリセット時刻はアカウントの設定ページにしか表示されないため、
+  # 未設定だとOllama側のquotaは不明のままになる。ログインから約90日で失効する。
+  session_cookie: ${OLLAMA_SESSION_COOKIE}
+  # How often to read that settings page, in seconds.
+  # 設定ページを読みに行く間隔(秒)
+  usage_page_interval_seconds: 120
 
 quota:
   # Fail over to Ollama Cloud once the remaining quota drops below this %.

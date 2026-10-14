@@ -36,15 +36,27 @@ Claude Code --ANTHROPIC_BASE_URL--> claude-spillway --> Anthropic API
 
 ### Ollama Cloud側のquota可視性について
 
-Ollama Cloudには、ドキュメント化された公式のquota APIが**依然として存在せず**([ollama/ollama#15663](https://github.com/ollama/ollama/issues/15663), [#16448](https://github.com/ollama/ollama/issues/16448))、推論レスポンスにもレート制限ヘッダーが一切付きません。ただし、Ollama自身のダッシュボードが参照している非公開の `GET /api/usage` は推論と同じAPIキーで叩け、その読み取り自体はリクエスト数に計上されません。claude-spillwayはここからセッション窓・週次窓の使用率とモデル別リクエスト数を取得しています。
+Ollama Cloudには、ドキュメント化された公式のquota APIが**依然として存在せず**([ollama/ollama#15663](https://github.com/ollama/ollama/issues/15663), [#16448](https://github.com/ollama/ollama/issues/16448))、推論レスポンスにもレート制限ヘッダーが一切付きません。非公開の `GET /api/usage` は2026-10まではAPIキーでセッション窓・週次窓の使用率を返していましたが、現在はリクエスト数しか返しません。quota(%)と**正確なリセット時刻**は、ログインが必要なアカウントの設定ページ(<https://ollama.com/settings> のUsageタブ)にしか表示されません。
 
-注意点が2つあります。非公開エンドポイントであるため、形が変わった場合はエラーではなく「データなし」に縮退します。またAnthropicと異なり、**Ollamaはリセット時刻を返しません**。そのため、Ollama側の窓がいつ切り替わるかは本ツールでは表示できません。
+これを読むには、`__Secure-session` Cookieの値をclaude-spillwayに渡します:
+
+1. ブラウザで <https://ollama.com/settings> にログインします。
+2. DevTools → Application(ストレージ) → Cookies → `https://ollama.com` を開き、`__Secure-session` の値をコピーします。
+3. `serve` から読める場所に設定します。例えばサービスが読み込む環境変数ファイルに、次のように書きます(値に `=` を含みうるためシングルクォートで囲みます):
+
+   ```bash
+   OLLAMA_SESSION_COOKIE='Cookieの値'
+   ```
+
+設定ページはプローブごとではなく `ollama.usage_page_interval_seconds`(デフォルト120秒)ごとに読みます。Cookieはログインから約90日で失効し、失効するとTUIとダッシュボードにその旨が表示され、警告ログも出ます。値を更新して再起動してください。設定ページはAPIではないため、ページ構成が変わった場合はエラーではなく「データなし」に縮退します。
+
+Cookie未設定の場合、Ollama側のquotaは不明のままとなり、ルーティングはOllamaに余裕がある前提で動きます(`ollama_min_remaining_pct` のガードは働きません)。
 
 ### Ollamaのリセット時刻について(予測表示)
 
-リセット時刻を取得するAPIは存在しないため(調査の詳細は[.github/TODO.md](.github/TODO.md))、利用率の動きからの**予測表示**を行います。利用率は窓がリセットされない限り下がらないため、上昇を検出した時刻を「新しい窓の始点」とみなし、「始点＋窓の最大長(セッション窓は5時間、週次窓は7日)」を**リセットが確実に済んでいる上限時刻**として表示します。真の値はこれより早い可能性があるため、TUIでは`~`を付けて実測値と区別します。
+設定ページからは正確なリセット時刻が得られます。リセット時刻を含まない読み取り(旧来の `/api/usage` の形式)の場合に限り、利用率の動きからの**予測表示**を行います。利用率は窓がリセットされない限り下がらないため、上昇を検出した時刻を「新しい窓の始点」とみなし、「始点＋窓の最大長(セッション窓は5時間、週次窓は7日)」を**リセットが確実に済んでいる上限時刻**として表示します。真の値はこれより早い可能性があるため、`~`を付けて実測値と区別します。
 
-この予測は表示専用であり、ルーティング判断には使われません。`burn_rate_balance`ポリシーは、リセット時刻が不明な窓を「始まったばかり」として扱うため、予測値に依存しません。
+この予測は表示専用であり、ルーティング判断には使われません。`burn_rate_balance`ポリシーは、実測のリセット時刻があればそれを使い、無ければ「始まったばかり」として扱うため、予測値に依存しません。
 
 ステータスエンドポイントとTUIでは、これに加えてこのプロキシを経由したトラフィックのみの自己計測値(中継リクエスト数、失敗数、直近のステータスコード)も報告します。
 
@@ -54,7 +66,7 @@ Ollama Cloudには、ドキュメント化された公式のquota APIが**依然
 
 - `anthropic_first`(デフォルト) — Anthropicが逼迫するまで使い続け、逼迫したらフェイルオーバーする。従来の挙動
 - `weekly_balance` — 短い窓が両方とも余裕のある間(`balance_session_floor_pct`)は、**週次窓**の残量が多い方を優先する。相手側が `balance_margin_pct` 以上優っている場合のみ切り替えるため、拮抗した2者間で振動しない
-- `burn_rate_balance` — 窓ごとに「残量 ÷ (リセットまでの時間 ÷ 窓の全長)」を求め、バックエンドごとに最も逼迫した窓を採用し、その値が良い方を優先する。リセット時刻が不明な場合(Ollamaは常にこれに該当)は「窓が始まったばかり」と仮定して最も甘く見積もるため、不明であることを根拠に焦りは生まない。`anthropic_priority_weight`(デフォルト1.1)により比較はClaudeサブスクリプション側に傾く。拮抗していればAnthropicが勝ち、約9%劣るまでトラフィックはOllamaへ移らない。ある側がリセットまでに使い切りそうなペースでquotaを消費している場合の安全弁として使う
+- `burn_rate_balance` — 窓ごとに「残量 ÷ (リセットまでの時間 ÷ 窓の全長)」を求め、バックエンドごとに最も逼迫した窓を採用し、その値が良い方を優先する。リセット時刻が不明な場合(セッションCookie未設定時のOllama)は「窓が始まったばかり」と仮定して最も甘く見積もるため、不明であることを根拠に焦りは生まない。`anthropic_priority_weight`(デフォルト1.1)により比較はClaudeサブスクリプション側に傾く。拮抗していればAnthropicが勝ち、約9%劣るまでトラフィックはOllamaへ移らない。ある側がリセットまでに使い切りそうなペースでquotaを消費している場合の安全弁として使う
 
 ポリシーに関係なく、常時2つのガードが働きます。
 
@@ -202,6 +214,8 @@ Windows + WSL2環境で使う場合は、[docs/wsl-windows.ja.md](docs/wsl-windo
 | `anthropic.base_url` | `https://api.anthropic.com` | Anthropic APIのエンドポイント |
 | `ollama.base_url` | `https://ollama.com` | Ollama Cloudのエンドポイント |
 | `ollama.api_key` | — | Ollama CloudのAPIキー(`${ENV_VAR}`形式で環境変数展開可) |
+| `ollama.session_cookie` | — | ollama.comにログインしたブラウザの `__Secure-session` Cookie。Ollama側のquota取得に必要 |
+| `ollama.usage_page_interval_seconds` | `120.0` | ollama.comの設定ページを読む間隔(秒) |
 | `quota.fallback_threshold_pct` | `10.0` | この残量%を下回るとフェイルオーバーする |
 | `quota.recovery_threshold_pct` | `20.0` | この残量%まで回復すると切り戻す |
 | `quota.probe_interval_seconds` | `60.0` | バックグラウンドプローブがquotaを再取得する間隔 |

@@ -185,20 +185,31 @@ def _build_renderable(data: dict, url: str, dashboard_url: str, error: str | Non
     ollama_table.add_column(t("monitor.col.value"), justify="right")
     ollama_table.add_column(t("monitor.col.resets_at"), justify="right")
     ollama_table.add_column(t("monitor.col.observed_at"), justify="right")
-    # Ollamaはリセット時刻を返さないため、利用率の上昇から求めた「上限値」を
-    # 波ダッシュ付きで示す。確定値ではないことを明示するため。
-    # Ollama reports no reset times, so show the estimated upper bound with a
-    # tilde - the prefix marks it as an estimate, never a measurement.
+    problem = ollama.get("usage_problem")
+    if problem:
+        # 使用率を読めない理由(Cookie失効など)を最上段に示す。
+        # Say up front why utilization cannot be read (stale cookie, ...).
+        ollama_table.add_row(
+            t("monitor.row.usage_problem"), f"[red]{t('monitor.ollama.problem.' + problem)}[/red]", "", ""
+        )
+    # 設定ページから読んだ実測のリセット時刻があればそれを出す。無ければ、
+    # 利用率の上昇から求めた「上限値」を波ダッシュ付きで示す(確定値ではないため)。
+    # Show the measured reset from the settings page when there is one;
+    # otherwise the estimated upper bound with a tilde marking it as such.
     ollama_table.add_row(
         t("monitor.row.session_window"),
         _fmt_pct(_remaining(ollama.get("session_utilization"))),
-        _fmt_estimated_reset(ollama.get("estimated_session_reset")),
+        _fmt_reset(ollama["session_reset"])
+        if ollama.get("session_reset")
+        else _fmt_estimated_reset(ollama.get("estimated_session_reset")),
         _fmt_time(ollama.get("observed_at")),
     )
     ollama_table.add_row(
         t("monitor.row.weekly_window"),
         _fmt_pct(_remaining(ollama.get("weekly_utilization"))),
-        _fmt_estimated_reset(ollama.get("estimated_weekly_reset")),
+        _fmt_reset(ollama["weekly_reset"])
+        if ollama.get("weekly_reset")
+        else _fmt_estimated_reset(ollama.get("estimated_weekly_reset")),
         _fmt_time(ollama.get("observed_at")),
     )
     top_models = ollama.get("weekly_models") or []

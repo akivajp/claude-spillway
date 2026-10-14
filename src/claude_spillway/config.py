@@ -116,6 +116,18 @@ class AnthropicConfig(BaseModel):
 class OllamaConfig(BaseModel):
     base_url: str = "https://ollama.com"
     api_key: str = ""
+    #: Value of the ``__Secure-session`` cookie from a signed-in ollama.com
+    #: browser. Since 2026-10 the API-key usage endpoint no longer reports
+    #: utilization, so the account's settings page is the only source left.
+    #: ブラウザでollama.comにログインした際の ``__Secure-session`` Cookieの値。
+    #: 2026-10以降、APIキーで読める使用量エンドポイントは使用率を返さなくなったため、
+    #: アカウントの設定ページが唯一の取得元となっている。
+    session_cookie: str = ""
+    #: How often to read the settings page, in seconds. Kept well above the
+    #: probe interval so the polling looks like a person, not a scraper.
+    #: 設定ページを読む間隔(秒)。スクレイピングと見なされないよう、
+    #: プローブ間隔よりも十分長くしている。
+    usage_page_interval_seconds: float = 120.0
 
 
 class QuotaConfig(BaseModel):

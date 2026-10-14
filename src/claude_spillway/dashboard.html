@@ -159,6 +159,7 @@ table.kv th { color: var(--muted); font-weight: 450; white-space: nowrap; paddin
 
 table.kv td { font-variant-numeric: tabular-nums; word-break: break-word; }
 table.kv tr.hide { display: none; }
+.note.hide { display: none; }
 
 .note { margin-top: .8rem; color: var(--muted); font-size: .76rem; }
 footer { margin-top: 1rem; color: var(--muted); font-size: .78rem; }
@@ -231,6 +232,7 @@ footer code { font-size: .95em; }
       <div class="sub" id="o-sub"></div>
       <div id="o-metrics"></div>
       <table class="kv">
+        <tr id="o-problem-row"><th id="l-usage-problem"></th><td id="o-problem" class="bad"></td></tr>
         <tr id="o-models-row"><th id="l-top-models"></th><td id="o-models"></td></tr>
         <tr><th id="l-relayed"></th><td id="o-relayed"></td></tr>
         <tr id="o-fail-row"><th id="l-consecutive"></th><td id="o-consecutive" class="bad"></td></tr>
@@ -317,9 +319,10 @@ function fmtDelta(epochSeconds) {
 }
 
 /** リセット時刻を「時刻 (あとN)」で表す。estimated の場合は ~ を前置し、
- *  実測ではないことを表示上でも区別する(Ollamaは推定値しか出せない)。
+ *  実測ではないことを表示上でも区別する(Ollamaはセッション Cookie が無いと推定値しか出せない)。
  *  Render a reset as "clock (in N)". An estimate is prefixed with ~ so it is
- *  never mistaken for a measurement - Ollama only ever yields an estimate. */
+ *  never mistaken for a measurement - without a session cookie, Ollama only
+ *  ever yields an estimate. */
 function fmtReset(epochSeconds, estimated) {
   if (!epochSeconds) return "";
   const delta = fmtDelta(epochSeconds);
@@ -416,11 +419,22 @@ function render(data) {
   setText("a-observed", fmtClock(a.observed_at));
 
   // --- Ollama ---
+  // 設定ページから読んだ実測のリセット時刻があればそれを優先し、無い場合だけ
+  // 推定値(~付き)を出す。推定の注記も推定値を出しているときだけ表示する。
+  // Prefer the measured resets from the settings page; fall back to the ~
+  // estimates only without them, and show the estimate note only then.
   const om = document.getElementById("o-metrics");
+  const sessionMeasured = Boolean(o.session_reset);
+  const weeklyMeasured = Boolean(o.weekly_reset);
   om.replaceChildren(
-    metric(L.session_window, remaining(o.session_utilization), o.estimated_session_reset, true, null),
-    metric(L.weekly_window, remaining(o.weekly_utilization), o.estimated_weekly_reset, true, null),
+    metric(L.session_window, remaining(o.session_utilization),
+      sessionMeasured ? o.session_reset : o.estimated_session_reset, !sessionMeasured, null),
+    metric(L.weekly_window, remaining(o.weekly_utilization),
+      weeklyMeasured ? o.weekly_reset : o.estimated_weekly_reset, !weeklyMeasured, null),
   );
+  document.getElementById("o-estimate-note").classList.toggle("hide", sessionMeasured && weeklyMeasured);
+  setRow("o-problem-row", Boolean(o.usage_problem));
+  setText("o-problem", o.usage_problem ? (L["problem_" + o.usage_problem] || o.usage_problem) : "");
   const models = o.weekly_models || [];
   setRow("o-models-row", models.length > 0);
   setText("o-models", models.slice(0, 3).map(m => `${m.name} (${m.request_count})`).join(", "));
@@ -506,6 +520,7 @@ function fillStatics() {
     "l-top-models": L.top_models, "l-relayed": L.relayed,
     "l-consecutive": L.consecutive_failures, "l-last-status": L.last_status,
     "l-last-error": L.last_error, "o-sub": L.ollama_sub,
+    "l-usage-problem": L.usage_problem,
     "o-estimate-note": L.estimate_note,
   };
   for (const [id, text] of Object.entries(statics)) setText(id, text);

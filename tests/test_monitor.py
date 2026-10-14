@@ -5,6 +5,7 @@ monitor.py の描画ロジックの単体テスト。
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 
 import pytest
@@ -123,3 +124,36 @@ def test_header_shows_the_dashboard_url_while_unreachable() -> None:
     プロキシが落ちている間も、復帰後に使えるようURLは出したままにする。
     """
     assert _DASHBOARD_URL in _render_to_text({}, error="connection refused")
+
+
+def test_measured_ollama_resets_show_without_tilde() -> None:
+    """設定ページ由来の実測リセット時刻は ~ 無しで、推定値は ~ 付きで出ること。
+
+    Measured resets render without the tilde; estimates keep it.
+    """
+    i18n.set_language("en")
+    later = time.time() + 3 * 3600
+    data = {
+        **_OBSERVED_DATA,
+        "ollama": {
+            **_OBSERVED_DATA["ollama"],
+            "session_utilization": 0.1,
+            "weekly_utilization": 0.2,
+            "session_reset": later,
+            "estimated_weekly_reset": later,
+        },
+    }
+    # Anthropic表にも "weekly window" があるため、Ollama表の部分だけを見る
+    # Anthropic's table has a "weekly window" row too; look at Ollama's only
+    lines = _render_to_text(data).split("Ollama Cloud", 1)[1].splitlines()
+    session_row = next(line for line in lines if "session window" in line)
+    weekly_row = next(line for line in lines if "weekly window" in line)
+    assert "~" not in session_row
+    assert "~" in weekly_row
+
+
+@pytest.mark.parametrize(("language", "expected"), [("en", "session expired"), ("ja", "セッションが失効")])
+def test_ollama_usage_problem_is_shown(language: str, expected: str) -> None:
+    i18n.set_language(language)
+    data = {**_OBSERVED_DATA, "ollama": {**_OBSERVED_DATA["ollama"], "usage_problem": "session_expired"}}
+    assert expected in _render_to_text(data)

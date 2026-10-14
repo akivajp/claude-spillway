@@ -20,6 +20,7 @@ from claude_spillway.quota import (
     QuotaTracker,
     RoutingPolicy,
     parse_ollama_usage,
+    parse_ollama_usage_page,
     parse_quota_headers,
     parse_usage_payload,
 )
@@ -260,6 +261,118 @@ def test_parse_ollama_usage_tolerates_odd_shapes() -> None:
     assert parse_ollama_usage({}).remaining_ratio() is None
     assert parse_ollama_usage({"limits": {"weekly": {"usage": "0.8"}}}).remaining_ratio() is None
     assert parse_ollama_usage({"limits": None}).weekly_models == ()
+
+
+#: ollama.com の設定ページ(Usageタブ)を、読み取り対象の要素だけ残して縮めたもの。
+#: 実ページ(2026-10-14取得)の構造をそのまま保っている。ページ後方の無関係な
+#: local-time 要素は、リセット時刻を上書きしてはならないことの確認用。
+#: The ollama.com settings page (Usage tab) trimmed to the elements read, with
+#: the real page's structure (fetched 2026-10-14) intact. The unrelated
+#: local-time element at the end must not overwrite a reset time.
+_OLLAMA_SETTINGS_PAGE = """
+<h2>Cloud usage</h2>
+<div>
+  <span class="text-sm ">Session usage</span><span class="text-sm ">12.5% used</span>
+  <div class="relative group" data-usage-meter="">
+    <div class="relative h-3" data-usage-track="" aria-label="Session usage 12.5% used">
+      <div class="flex h-full" style="width: 12.5%">
+        <button type="button" data-usage-segment="" data-model="gemma4:31b" data-requests="3"></button>
+      </div>
+    </div>
+  </div>
+  <div class="text-xs text-neutral-500 mt-1 local-time" data-time="2026-10-14T15:00:00Z">Resets in 4 hours.</div>
+</div>
+<div>
+  <span class="text-sm">Weekly usage</span><span class="text-sm ">1.6% used</span>
+  <div class="relative group" data-usage-meter="">
+    <div class="relative h-3" data-usage-track="" aria-label="Weekly usage 1.6% used">
+      <div class="flex h-full" style="width: 1.6%">
+        <button type="button" data-usage-segment="" data-model="gemma4:31b" data-requests="32"></button>
+        <button type="button" data-usage-segment="" data-model="glm-5.3-flash" data-requests="157"></button>
+      </div>
+    </div>
+  </div>
+  <div class="text-xs text-neutral-500 mt-1 local-time" data-time="2026-10-19T00:00:00Z">Resets in 4 days.</div>
+</div>
+<div class="local-time" data-time="2027-01-01T00:00:00Z">billing date</div>
+"""
+
+
+def test_parse_ollama_usage_page_reads_meters_and_exact_resets() -> None:
+    snapshot = parse_ollama_usage_page(_OLLAMA_SETTINGS_PAGE, observed_at=1.0)
+    assert snapshot is not None
+    assert snapshot.session_utilization == pytest.approx(0.125)
+    assert snapshot.weekly_utilization == pytest.approx(0.016)
+    assert snapshot.observed_at == 1.0
+    # data-time の実測リセット時刻 / the measured resets from data-time
+    assert snapshot.session_reset == datetime(2026, 10, 14, 15, tzinfo=UTC).timestamp()
+    assert snapshot.weekly_reset == datetime(2026, 10, 19, tzinfo=UTC).timestamp()
+    # 週次窓のセグメントだけを多い順に / weekly segments only, most used first
+    assert snapshot.weekly_models == (("glm-5.3-flash", 157), ("gemma4:31b", 32))
+
+
+def test_parse_ollama_usage_page_without_meters_is_none() -> None:
+    """サインインページ(セッション失効)や改装後のページは「データなし」になること。
+
+    A sign-in page (expired session) or a redesigned page reads as "no data".
+    """
+    assert parse_ollama_usage_page("<html><body><form>Sign in</form></body></html>") is None
+    assert parse_ollama_usage_page("") is None
+
+
+def test_parse_ollama_usage_page_keeps_a_meter_without_reset() -> None:
+    page = '<div data-usage-track="" aria-label="Weekly usage 100% used"></div>'
+    snapshot = parse_ollama_usage_page(page)
+    assert snapshot is not None
+    assert snapshot.weekly_utilization == pytest.approx(1.0)
+    assert snapshot.session_utilization is None
+    assert snapshot.weekly_reset is None
+
+
+def test_estimator_keeps_measured_resets() -> None:
+    """推定器を通しても実測リセット時刻が落ちないこと。
+
+    Passing through the estimator must not drop measured resets.
+    """
+    snapshot = OllamaSnapshot(
+        session_utilization=0.1, weekly_utilization=0.2, observed_at=1.0, weekly_reset=99.0
+    )
+    assert OllamaResetEstimator().update(snapshot).weekly_reset == 99.0
+
+
+def test_burn_rate_uses_measured_ollama_resets() -> None:
+    """設定ページ由来の実測リセット時刻は burn_rate_balance の判断に使われること。
+
+    Ollama週次残50%: リセット不明なら0.5、1日後リセットなら 0.5/(1/7)=3.5。
+    セッション窓(残100%、リセット不明)の1.0が最小となり、Anthropicの
+    min(0.7/(4/5), 0.9/(6/7)) × 1.1 = 0.9625 を上回るのでOllamaへ移る。
+    Measured resets feed burn_rate_balance: with the weekly reset a day out,
+    Ollama's tightest window reads 1.0, beating Anthropic's weighted 0.9625.
+    """
+    now = time.time()
+
+    def tracker_with(weekly_reset: float | None) -> QuotaTracker:
+        tracker = QuotaTracker(
+            fallback_threshold_pct=10.0,
+            recovery_threshold_pct=20.0,
+            policy=RoutingPolicy.BURN_RATE_BALANCE,
+            anthropic_priority_weight=1.1,
+        )
+        tracker.observe_ollama(
+            OllamaSnapshot(
+                session_utilization=0.0,
+                weekly_utilization=0.5,
+                observed_at=now,
+                weekly_reset=weekly_reset,
+            )
+        )
+        tracker.observe(_anthropic_with_resets(0.30, now + 4 * 3600, 0.1, now + 6 * 86400))
+        return tracker
+
+    # リセット不明なら週次残50%がそのまま効き、Anthropicに留まる
+    # With the reset unknown, 50% weekly stands as-is and Anthropic stays
+    assert tracker_with(None).mode is BackendMode.ANTHROPIC
+    assert tracker_with(now + 86400).mode is BackendMode.FALLBACK
 
 
 def test_exhausted_ollama_is_never_used_as_a_fallback() -> None:

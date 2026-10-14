@@ -2,7 +2,9 @@
 
 ## Ollama Cloudのquotaリセット時刻
 
-**状態**: 未解決（2026-09-05時点）。回避策として予測値を実装済み。
+**状態**: 解決（2026-10-14）。ollama.com の設定ページ（Usageタブ）をセッションCookieで読み、使用率と実測リセット時刻を取得するようにした。
+
+2026-10-14 に `/api/usage` の形式が変わり、使用率（`limits`）を返さずリクエスト数のみを返すようになった。設定ページはHTMLに `aria-label="Session usage N% used"` と `data-time="<ISO 8601 UTC>"`（正確なリセット時刻）を埋め込んでおり、`__Secure-session` Cookie だけで取得できる（JSON APIは無い。Cookieはログインから約90日で失効し、アクセスで延長されない）。下記で「不採用」としたスクレイピングを、取得間隔を空ける（`ollama.usage_page_interval_seconds`、既定120秒）ことで採用した形。予測値（`OllamaResetEstimator`）は実測値が無い場合の代替として残している。以下は解決前の記録。
 
 ### 背景
 
