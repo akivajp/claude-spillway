@@ -238,6 +238,7 @@ footer code { font-size: .95em; }
         <tr id="o-fail-row"><th id="l-consecutive"></th><td id="o-consecutive" class="bad"></td></tr>
         <tr><th id="l-last-status"></th><td id="o-status"></td></tr>
         <tr><th id="l-observed2"></th><td id="o-observed"></td></tr>
+        <tr id="o-session-row"><th id="l-session-expires"></th><td id="o-session"></td></tr>
         <tr id="o-error-row"><th id="l-last-error"></th><td id="o-error" class="bad"></td></tr>
       </table>
       <div class="note" id="o-estimate-note"></div>
@@ -443,6 +444,18 @@ function render(data) {
   setText("o-consecutive", String(o.consecutive_failures ?? 0));
   setText("o-status", o.last_status_code ?? "–");
   setText("o-observed", fmtClock(o.observed_at));
+  // ollama.comセッションの期限。残り14日を切ったら注意色、過ぎたら警告色にする。
+  // The ollama.com session's expiry: amber under 14 days left, red once past.
+  setRow("o-session-row", Boolean(o.session_expires));
+  if (o.session_expires) {
+    const cell = document.getElementById("o-session");
+    const days = Math.floor((o.session_expires - Date.now() / 1000) / 86400);
+    const date = new Date(o.session_expires * 1000).toLocaleDateString();
+    cell.textContent = days < 0
+      ? L.session_expired.replace("{date}", date)
+      : L.session_days_left.replace("{date}", date).replace("{days}", days);
+    cell.className = days < 0 ? "bad" : (days < 14 ? "warn" : "");
+  }
   setRow("o-error-row", Boolean(o.last_error));
   setText("o-error", o.last_error || "");
 
@@ -520,7 +533,7 @@ function fillStatics() {
     "l-top-models": L.top_models, "l-relayed": L.relayed,
     "l-consecutive": L.consecutive_failures, "l-last-status": L.last_status,
     "l-last-error": L.last_error, "o-sub": L.ollama_sub,
-    "l-usage-problem": L.usage_problem,
+    "l-usage-problem": L.usage_problem, "l-session-expires": L.session_expires,
     "o-estimate-note": L.estimate_note,
   };
   for (const [id, text] of Object.entries(statics)) setText(id, text);

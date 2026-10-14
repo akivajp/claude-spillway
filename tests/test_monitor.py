@@ -157,3 +157,19 @@ def test_ollama_usage_problem_is_shown(language: str, expected: str) -> None:
     i18n.set_language(language)
     data = {**_OBSERVED_DATA, "ollama": {**_OBSERVED_DATA["ollama"], "usage_problem": "session_expired"}}
     assert expected in _render_to_text(data)
+
+
+@pytest.mark.parametrize(
+    ("days", "expected"), [(40, "in 40 days"), (3, "[yellow]"), (-1, "expired")]
+)
+def test_session_expiry_row(days: int, expected: str) -> None:
+    """セッション期限は残り日数付きで、14日未満は黄色、過ぎたら失効と表示すること。
+
+    The expiry shows days left, amber under 14 days, and "expired" once past.
+    """
+    from claude_spillway.monitor import _fmt_session_expiry
+
+    i18n.set_language("en")
+    # 境界の丸めに左右されないよう半日ずらす / offset by half a day to avoid rounding edges
+    rendered = _fmt_session_expiry(time.time() + days * 86400 + 43200)
+    assert expected in rendered

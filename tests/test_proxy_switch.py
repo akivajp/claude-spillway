@@ -667,3 +667,48 @@ async def test_usage_api_without_utilization_is_reported(settings: Settings) -> 
     assert calls["usage"] == 1
     assert probe.ollama_usage_problem == "api_no_utilization"
     await backends.aclose()
+
+
+async def test_saved_session_is_reread_and_a_new_cookie_clears_expiry(settings: Settings) -> None:
+    """A cookie refreshed by ollama-login is used at once, with no restart.
+
+    ollama-login で更新されたCookieは再起動なしで即座に使われ、失効表示も消えること。
+    保存ファイルの有効期限はステータスに載ること。
+    """
+    from claude_spillway.config import save_ollama_session
+
+    session_file = settings.ollama.session_file_path()
+    save_ollama_session(session_file, "stale", 1800000000.0)
+    sent: list[str | None] = []
+
+    def page_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request.headers.get("cookie"))
+        if request.headers.get("cookie") == "__Secure-session=stale":
+            return httpx.Response(303, headers={"location": "https://ollama.com/signin"})
+        return httpx.Response(200, text=_OLLAMA_SETTINGS_PAGE)
+
+    backends = _ollama_web_backends(settings, page_handler)
+    app = create_app(settings, backends=backends)
+    probe = app.state.recovery_probe
+    probe.capture_auth_headers({"x-api-key": "sk-ant-test"})
+
+    await probe._probe_once()
+    assert probe.ollama_usage_problem == "session_expired"
+    # 同じCookieでは読みに行かない / the same stale cookie is not retried
+    await probe._probe_once()
+    assert len(sent) == 1
+
+    # 取得間隔(120秒)の途中でも、新しいCookieなら即座に読む
+    # A new cookie is read at once, even inside the 120s interval
+    save_ollama_session(session_file, "fresh", 1900000000.0)
+    await probe._probe_once()
+    assert sent[-1] == "__Secure-session=fresh"
+    assert probe.ollama_usage_problem is None
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        data = (await client.get("/_spillway/status")).json()["ollama"]
+    assert data["session_expires"] == 1900000000.0
+    assert data["weekly_utilization"] == pytest.approx(0.2)
+    await backends.aclose()

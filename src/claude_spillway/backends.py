@@ -246,19 +246,19 @@ class ProxyBackends:
             },
         )
 
-    async def fetch_ollama_usage_page(self) -> httpx.Response:
-        """Fetch the ollama.com settings page with the configured session cookie.
+    async def fetch_ollama_usage_page(self, session_cookie: str) -> httpx.Response:
+        """Fetch the ollama.com settings page with the given session cookie.
 
         Redirects are deliberately not followed: an expired session answers with
         a redirect to the sign-in page, and the caller needs to see that rather
         than the sign-in page's 200.
 
-        設定済みのセッションCookieを付けてollama.comの設定ページを取得する。
+        指定のセッションCookieを付けてollama.comの設定ページを取得する。
         リダイレクトはあえて追わない。セッションが失効しているとサインイン
         ページへのリダイレクトが返るため、呼び出し側はサインインページの200では
         なく、そのリダイレクト自体を見て判断する必要がある。
         """
-        cookie = self._settings.ollama.session_cookie.strip()
+        cookie = session_cookie.strip()
         # 「名前=値」の形で貼り付けられた場合も受け付ける。
         # Also accept the cookie pasted as "name=value".
         prefix = OLLAMA_SESSION_COOKIE_NAME + "="

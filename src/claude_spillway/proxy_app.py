@@ -67,6 +67,9 @@ _DASHBOARD_LABELS: dict[str, str] = {
     "problem_session_expired": "monitor.ollama.problem.session_expired",
     "problem_page_not_understood": "monitor.ollama.problem.page_not_understood",
     "problem_api_no_utilization": "monitor.ollama.problem.api_no_utilization",
+    "session_expires": "monitor.row.session_expires",
+    "session_days_left": "monitor.session.days_left",
+    "session_expired": "monitor.session.expired",
     "waiting": "monitor.waiting.body",
     "thresholds": "monitor.footer.thresholds",
     "reset_in": "monitor.reset.in",
@@ -312,6 +315,9 @@ def create_app(settings: Settings, backends: ProxyBackends | None = None) -> Fas
                     # 使用率を読めない理由(Cookie失効など)。読めていれば None。
                     # Why utilization cannot be read (stale cookie, ...), else None.
                     "usage_problem": recovery_probe.ollama_usage_problem,
+                    # ollama.comセッションの有効期限(ollama-login で保存した場合のみ)。
+                    # Expiry of the ollama.com session (only when saved by ollama-login).
+                    "session_expires": recovery_probe.ollama_session_expires,
                     "weekly_models": (
                         [{"name": n, "request_count": c} for n, c in ollama_snapshot.weekly_models]
                         if ollama_snapshot

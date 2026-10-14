@@ -21,7 +21,7 @@ import time
 import httpx
 
 from .backends import ProxyBackends
-from .config import Settings
+from .config import Settings, load_ollama_session
 from .models import DirectModelRegistry, parse_ollama_models
 from .quota import (
     BackendMode,
@@ -92,6 +92,14 @@ class RecoveryProbe:
         # 設定ページを最後に読みに行った時刻。ページは毎ティック読まず間隔を空ける。
         # When the settings page was last fetched; it is not read on every tick.
         self._ollama_page_fetched_at: float | None = None
+        # 最後に設定ページへ送ったCookie。差し替えを検知して即座に読み直すために使う。
+        # The cookie last sent to the settings page, to notice a replacement.
+        self._ollama_page_cookie: str | None = None
+        #: Expiry (epoch seconds) of the ollama.com session in use, when known.
+        #: Only a session saved by ``ollama-login`` carries one.
+        #: 使用中のollama.comセッションの有効期限(エポック秒)。分かる場合のみ。
+        #: ``ollama-login`` で保存したセッションだけが期限を持つ。
+        self.ollama_session_expires: float | None = None
         #: Why Ollama's utilization cannot be read right now, or ``None`` if it
         #: can. One of :data:`OLLAMA_PROBLEM_CODES`; shown by the monitor views.
         #: Ollamaの使用率を現在読めない理由。読めていれば ``None``。
@@ -265,8 +273,14 @@ class RecoveryProbe:
         試す。失敗しても静かに諦める。この値が無くても従来どおりのルーティングに
         なるだけなので、ループを止めてまで扱う価値はない。
         """
-        if self._settings.ollama.session_cookie.strip():
-            snapshot = await self._read_ollama_usage_page()
+        # 保存ファイルは毎回読み直す。ollama-login で更新されたCookieを
+        # 再起動なしで拾うため(読み取りは小さなJSON1つで安い)。
+        # Re-read the saved session every time, so a cookie refreshed by
+        # ollama-login is picked up without a restart (one small JSON file).
+        session = load_ollama_session(self._settings.ollama)
+        self.ollama_session_expires = session.expires if session else None
+        if session is not None:
+            snapshot = await self._read_ollama_usage_page(session.cookie)
         else:
             snapshot = await self._read_ollama_usage_api()
         if snapshot is None or snapshot.remaining_ratio() is None:
@@ -279,27 +293,32 @@ class RecoveryProbe:
             snapshot = self._ollama_reset_estimator.update(snapshot)
         self._tracker.observe_ollama(snapshot)
 
-    async def _read_ollama_usage_page(self) -> OllamaSnapshot | None:
+    async def _read_ollama_usage_page(self, cookie: str) -> OllamaSnapshot | None:
         """Read utilization and reset times from the ollama.com settings page.
 
         Fetched at most once per ``usage_page_interval_seconds``, since this is
-        a page meant for people. An expired session is reported once and then
-        left alone: the cookie only changes with a restart, so retrying is futile.
+        a page meant for people - except right after the cookie changes. An
+        expired session is reported once and then left alone until a different
+        cookie shows up, since retrying the same one is futile.
 
         ollama.comの設定ページから使用率とリセット時刻を読む。
         人が見るためのページなので、``usage_page_interval_seconds`` に1回までしか
-        読まない。セッション失効は1回だけ報告し、以後は読みに行かない。Cookieは
-        再起動しないと変わらないため、再試行しても無駄である。
+        読まない(Cookieが差し替わった直後だけは即座に読む)。セッション失効は
+        1回だけ報告し、別のCookieが現れるまでは読みに行かない。同じCookieで
+        再試行しても無駄なため。
         """
-        if self.ollama_usage_problem == "session_expired":
+        changed = cookie != self._ollama_page_cookie
+        if self.ollama_usage_problem == "session_expired" and not changed:
             return None
         now = time.time()
         interval = self._settings.ollama.usage_page_interval_seconds
-        if self._ollama_page_fetched_at is not None and now - self._ollama_page_fetched_at < interval:
+        recent = self._ollama_page_fetched_at is not None and now - self._ollama_page_fetched_at < interval
+        if recent and not changed:
             return None
         self._ollama_page_fetched_at = now
+        self._ollama_page_cookie = cookie
         try:
-            response = await self._backends.fetch_ollama_usage_page()
+            response = await self._backends.fetch_ollama_usage_page(cookie)
         except httpx.HTTPError as exc:
             # 一時的な障害とみなし、次の間隔で再試行する。
             # Transient: try again after the next interval.
@@ -310,8 +329,8 @@ class RecoveryProbe:
             # A bounce to sign-in means the session cookie has gone stale.
             self.ollama_usage_problem = "session_expired"
             logger.warning(
-                "ollama session cookie rejected (HTTP %s); update OLLAMA_SESSION_COOKIE "
-                "and restart to read Ollama's quota again",
+                "ollama session cookie rejected (HTTP %s); run `claude-spillway ollama-login` "
+                "to sign in again",
                 response.status_code,
             )
             return None
@@ -362,7 +381,7 @@ class RecoveryProbe:
             self._ollama_usage_unavailable = True
             self.ollama_usage_problem = "api_no_utilization"
             logger.warning(
-                "ollama usage endpoint reports no utilization; set ollama.session_cookie "
+                "ollama usage endpoint reports no utilization; run `claude-spillway ollama-login` "
                 "to read Ollama's quota from the settings page"
             )
             return None

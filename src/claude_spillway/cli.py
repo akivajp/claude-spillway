@@ -15,6 +15,10 @@ from rich.logging import RichHandler
 from .config import Settings, resolve_config_path
 from .i18n import t
 
+# login.py は Playwright を読み込まない(実行時に遅延 import する)ため、定数の参照は安全。
+# login.py imports Playwright lazily, so pulling a constant from it here is safe.
+from .login import BROWSER_CHANNELS
+
 console = Console()
 
 
@@ -66,6 +70,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     monitor.add_argument("--host", type=str, default="127.0.0.1", help=t("cli.monitor.host"))
     monitor.add_argument("--port", type=int, default=8787, help=t("cli.monitor.port"))
     monitor.add_argument("--interval", type=float, default=1.0, help=t("cli.monitor.interval"))
+
+    login = subparsers.add_parser("ollama-login", help=t("cli.login.help"))
+    login.add_argument("-c", "--config", type=Path, default=None, help=t("cli.login.config"))
+    login.add_argument("--headed", action="store_true", help=t("cli.login.headed"))
+    login.add_argument("--timeout", type=float, default=600.0, help=t("cli.login.timeout"))
+    login.add_argument(
+        "--channel", choices=BROWSER_CHANNELS, default="chrome", help=t("cli.login.channel")
+    )
+    login.add_argument("--profile-dir", type=Path, default=None, help=t("cli.login.profile_dir"))
+    login.add_argument("--session-file", type=Path, default=None, help=t("cli.login.session_file"))
 
     return parser
 
@@ -424,6 +438,23 @@ def _run_monitor(args: argparse.Namespace) -> None:
     run_monitor(host=args.host, port=args.port, interval=args.interval)
 
 
+def _run_ollama_login(args: argparse.Namespace) -> None:
+    # Playwright は任意依存のため、このサブコマンドを使うときだけ読み込む。
+    # Playwright is optional, so the login module is imported only on demand.
+    from .login import default_profile_dir, run_ollama_login
+
+    settings = _load_settings(args.config)
+    code = run_ollama_login(
+        settings,
+        profile_dir=(args.profile_dir or default_profile_dir()).expanduser(),
+        session_file=(args.session_file or settings.ollama.session_file_path()).expanduser(),
+        channel=args.channel,
+        headed=args.headed,
+        timeout=args.timeout,
+    )
+    raise SystemExit(code)
+
+
 def main() -> None:
     parser = _build_arg_parser()
     args = parser.parse_args()
@@ -434,6 +465,8 @@ def main() -> None:
         _run_models(args)
     elif args.command == "monitor":
         _run_monitor(args)
+    elif args.command == "ollama-login":
+        _run_ollama_login(args)
 
 
 if __name__ == "__main__":

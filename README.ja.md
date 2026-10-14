@@ -38,17 +38,21 @@ Claude Code --ANTHROPIC_BASE_URL--> claude-spillway --> Anthropic API
 
 Ollama Cloudには、ドキュメント化された公式のquota APIが**依然として存在せず**([ollama/ollama#15663](https://github.com/ollama/ollama/issues/15663), [#16448](https://github.com/ollama/ollama/issues/16448))、推論レスポンスにもレート制限ヘッダーが一切付きません。非公開の `GET /api/usage` は2026-10まではAPIキーでセッション窓・週次窓の使用率を返していましたが、現在はリクエスト数しか返しません。quota(%)と**正確なリセット時刻**は、ログインが必要なアカウントの設定ページ(<https://ollama.com/settings> のUsageタブ)にしか表示されません。
 
-これを読むには、`__Secure-session` Cookieの値をclaude-spillwayに渡します:
+これを読むには、`ollama-login` で一度ログインします。インストール済みのChromeをPlaywright(任意依存)経由で操作するため、`login` extra 付きでインストールしてください:
 
-1. ブラウザで <https://ollama.com/settings> にログインします。
-2. DevTools → Application(ストレージ) → Cookies → `https://ollama.com` を開き、`__Secure-session` の値をコピーします。
-3. `serve` から読める場所に設定します。例えばサービスが読み込む環境変数ファイルに、次のように書きます(値に `=` を含みうるためシングルクォートで囲みます):
+```bash
+uv tool install 'claude-spillway[login]'   # または: pip install 'claude-spillway[login]'
+claude-spillway ollama-login
+```
 
-   ```bash
-   OLLAMA_SESSION_COOKIE='Cookieの値'
-   ```
+ブラウザが開くので、そこでログインします(ログイン操作そのものは自動化しません)。ログインが済むと、セッションCookieが**有効期限付きで** `~/.config/claude-spillway/ollama-session.json`(権限0600)に保存されます。ブラウザのプロファイルも保存されるため、プロファイルがログイン済みの間は、次回以降の実行はheadlessのままCookieを書き出します。プロキシはこのファイルを読み直すので、再起動は不要です。
 
-設定ページはプローブごとではなく `ollama.usage_page_interval_seconds`(デフォルト120秒)ごとに読みます。Cookieはログインから約90日で失効し、失効するとTUIとダッシュボードにその旨が表示され、警告ログも出ます。値を更新して再起動してください。設定ページはAPIではないため、ページ構成が変わった場合はエラーではなく「データなし」に縮退します。
+- セッションの有効期限(ログインから約90日)はダッシュボードとTUIに表示されます。残り14日未満で黄色、失効すると赤になるので、その時点で `ollama-login` を再実行してください。
+- ログインには画面が必要です。SSH経由の場合は `DISPLAY`(と `XAUTHORITY`)をデスクトップのセッションに向けるか、画面のあるマシンで実行してファイルをコピーしてください。
+- `--headed` で常にブラウザを表示します。Chromeが無い環境では `--channel chromium` でPlaywright同梱のブラウザを使えます(`playwright install chromium` が必要)。
+- ファイルの代わりに、`ollama.session_cookie` にCookieの値を直接書くこともできます。ファイルより優先されますが、有効期限は不明になります。
+
+設定ページはプローブごとではなく `ollama.usage_page_interval_seconds`(デフォルト120秒)ごとに読みます。設定ページはAPIではないため、ページ構成が変わった場合はエラーではなく「データなし」に縮退します。
 
 Cookie未設定の場合、Ollama側のquotaは不明のままとなり、ルーティングはOllamaに余裕がある前提で動きます(`ollama_min_remaining_pct` のガードは働きません)。
 
@@ -214,7 +218,8 @@ Windows + WSL2環境で使う場合は、[docs/wsl-windows.ja.md](docs/wsl-windo
 | `anthropic.base_url` | `https://api.anthropic.com` | Anthropic APIのエンドポイント |
 | `ollama.base_url` | `https://ollama.com` | Ollama Cloudのエンドポイント |
 | `ollama.api_key` | — | Ollama CloudのAPIキー(`${ENV_VAR}`形式で環境変数展開可) |
-| `ollama.session_cookie` | — | ollama.comにログインしたブラウザの `__Secure-session` Cookie。Ollama側のquota取得に必要 |
+| `ollama.session_file` | `<設定ディレクトリ>/ollama-session.json` | `ollama-login` がollama.comのセッションを保存する場所(取得のたびに読み直す) |
+| `ollama.session_cookie` | — | `__Secure-session` Cookieの値を直接指定する場合に使う。`session_file` より優先 |
 | `ollama.usage_page_interval_seconds` | `120.0` | ollama.comの設定ページを読む間隔(秒) |
 | `quota.fallback_threshold_pct` | `10.0` | この残量%を下回るとフェイルオーバーする |
 | `quota.recovery_threshold_pct` | `20.0` | この残量%まで回復すると切り戻す |

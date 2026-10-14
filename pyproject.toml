@@ -32,6 +32,13 @@ dependencies = [
     "uvicorn[standard]>=0.52.4",
 ]
 
+[project.optional-dependencies]
+# ``claude-spillway ollama-login`` でブラウザを操作するためだけに使う。
+# Only needed by ``claude-spillway ollama-login``, which drives a browser.
+login = [
+    "playwright>=1.64.0",
+]
+
 [project.urls]
 Homepage = "https://github.com/akivajp/claude-spillway"
 Repository = "https://github.com/akivajp/claude-spillway"

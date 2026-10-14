@@ -83,6 +83,22 @@ def _fmt_estimated_reset(ts: float | None) -> str:
     return f"~{_fmt_reset(ts)}"
 
 
+def _fmt_session_expiry(ts: float) -> str:
+    """Render the ollama.com session expiry as a date plus days left.
+
+    Amber under 14 days, red once past - the cue to run ``ollama-login`` again.
+
+    ollama.comセッションの有効期限を「日付 (あとN日)」で表示する。
+    残り14日未満で黄色、過ぎたら赤にし、``ollama-login`` の再実行を促す。
+    """
+    date = datetime.fromtimestamp(ts, tz=UTC).astimezone().strftime("%Y-%m-%d")
+    days = int((ts - time.time()) // 86400)
+    if days < 0:
+        return f"[red]{t('monitor.session.expired', date=date)}[/red]"
+    text = t("monitor.session.days_left", date=date, days=days)
+    return f"[yellow]{text}[/yellow]" if days < 14 else text
+
+
 def _build_renderable(data: dict, url: str, dashboard_url: str, error: str | None) -> Group:
     mode = data.get("mode", "unknown")
     mode_label = {
@@ -231,6 +247,10 @@ def _build_renderable(data: dict, url: str, dashboard_url: str, error: str | Non
     ollama_table.add_row(
         t("monitor.row.last_request_at"), _fmt_time(ollama.get("last_request_at")), "", ""
     )
+    if ollama.get("session_expires"):
+        ollama_table.add_row(
+            t("monitor.row.session_expires"), _fmt_session_expiry(ollama["session_expires"]), "", ""
+        )
     if ollama.get("last_error"):
         ollama_table.add_row(t("monitor.row.last_error"), f"[red]{ollama['last_error']}[/red]", "", "")
 

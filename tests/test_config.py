@@ -12,9 +12,12 @@ import pytest
 
 from claude_spillway.config import (
     CONFIG_ENV_VAR,
+    OllamaConfig,
     Settings,
     default_config_candidates,
+    load_ollama_session,
     resolve_config_path,
+    save_ollama_session,
     user_config_dir,
 )
 
@@ -101,3 +104,39 @@ def test_returns_none_when_nothing_is_found(tmp_path: Path, monkeypatch: pytest.
     # None は「デフォルト値のみで動く」を意味し、エラーではない。
     # None means "run on defaults alone" and is not an error.
     assert Settings.load(None).listen.port == 8787
+
+
+def test_saved_ollama_session_round_trips_owner_only(tmp_path: Path) -> None:
+    """保存したセッションは期限ごと読み戻せ、所有者のみ読める権限で作られること。
+
+    A saved session reads back with its expiry, in a file only the owner can read.
+    """
+    path = tmp_path / "nested" / "ollama-session.json"
+    save_ollama_session(path, "abc", 1800000000.0)
+    session = load_ollama_session(OllamaConfig(session_file=str(path)))
+    assert session is not None
+    assert (session.cookie, session.expires, session.source) == ("abc", 1800000000.0, "file")
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_explicit_session_cookie_wins_over_the_saved_file(tmp_path: Path) -> None:
+    path = tmp_path / "ollama-session.json"
+    save_ollama_session(path, "from-file", 1800000000.0)
+    session = load_ollama_session(OllamaConfig(session_cookie="from-config", session_file=str(path)))
+    assert session is not None
+    # 明示指定は期限を持たない / an explicit cookie carries no expiry
+    assert (session.cookie, session.expires, session.source) == ("from-config", None, "config")
+
+
+def test_missing_or_broken_session_file_means_no_session(tmp_path: Path) -> None:
+    path = tmp_path / "ollama-session.json"
+    assert load_ollama_session(OllamaConfig(session_file=str(path))) is None
+    path.write_text("{not json")
+    assert load_ollama_session(OllamaConfig(session_file=str(path))) is None
+    path.write_text('{"cookie": "", "expires": 1}')
+    assert load_ollama_session(OllamaConfig(session_file=str(path))) is None
+
+
+def test_session_file_defaults_to_the_user_config_dir() -> None:
+    assert OllamaConfig().session_file_path() == user_config_dir() / "ollama-session.json"

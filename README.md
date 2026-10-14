@@ -87,22 +87,33 @@ it now returns request counts only. The quota (%) and **exact reset times** are
 only shown on the account's settings page (<https://ollama.com/settings>, Usage
 tab), which needs a signed-in browser session.
 
-To read it, give claude-spillway the value of the `__Secure-session` cookie:
+To read it, sign in once with `ollama-login`. It drives your installed Chrome
+through Playwright (an optional extra), so install with the `login` extra:
 
-1. Sign in at <https://ollama.com/settings> in a browser.
-2. Open DevTools → Application (Storage) → Cookies → `https://ollama.com`, and
-   copy the value of `__Secure-session`.
-3. Set it where `serve` can read it, e.g. in the environment file used by the
-   service (single quotes, since the value may contain `=`):
+```bash
+uv tool install 'claude-spillway[login]'   # or: pip install 'claude-spillway[login]'
+claude-spillway ollama-login
+```
 
-   ```bash
-   OLLAMA_SESSION_COOKIE='the-cookie-value'
-   ```
+A browser window opens for you to sign in (nothing about the sign-in itself is
+automated). Once signed in, the session cookie is saved **with its expiry** to
+`~/.config/claude-spillway/ollama-session.json` (mode 0600), and the browser
+profile is kept, so later runs export the cookie headlessly while that profile
+is still signed in. The proxy re-reads the file, so no restart is needed.
+
+- The dashboard and TUI show when the session expires (about 90 days after
+  sign-in): amber under 14 days left, red once expired. Run `ollama-login`
+  again then.
+- Signing in needs a screen. Over SSH, point `DISPLAY` (and `XAUTHORITY`) at
+  the desktop session, or run it on a machine with a screen and copy the file.
+- `--headed` always opens the window; `--channel chromium` uses Playwright's
+  own browser (`playwright install chromium`) when Chrome is not installed.
+- Instead of the file, `ollama.session_cookie` can hold the cookie value
+  directly. It wins over the file, but its expiry is then unknown.
 
 The page is read every `ollama.usage_page_interval_seconds` (default 120s), not
-on every probe. The cookie expires about 90 days after sign-in; when it does, the
-TUI and dashboard say so and a warning is logged — update the value and restart.
-The page is not an API, so a redesign degrades to "no data" rather than an error.
+on every probe. The page is not an API, so a redesign degrades to "no data"
+rather than an error.
 
 Without a cookie, Ollama's quota stays unknown and routing behaves as if Ollama
 had headroom (the `ollama_min_remaining_pct` guard cannot engage).
@@ -334,7 +345,8 @@ If neither exists, claude-spillway starts on its built-in defaults. Key fields:
 | `anthropic.base_url` | `https://api.anthropic.com` | Anthropic API endpoint |
 | `ollama.base_url` | `https://ollama.com` | Ollama Cloud endpoint |
 | `ollama.api_key` | — | Ollama Cloud API key (supports `${ENV_VAR}`) |
-| `ollama.session_cookie` | — | `__Secure-session` cookie of a signed-in ollama.com browser; needed to read Ollama's quota |
+| `ollama.session_file` | `<config dir>/ollama-session.json` | Where `ollama-login` saves the ollama.com session (re-read on every fetch) |
+| `ollama.session_cookie` | — | `__Secure-session` cookie value, given directly; wins over `session_file` |
 | `ollama.usage_page_interval_seconds` | `120.0` | How often the ollama.com settings page is read |
 | `quota.fallback_threshold_pct` | `10.0` | Remaining % below which we fail over |
 | `quota.recovery_threshold_pct` | `20.0` | Remaining % above which we switch back |

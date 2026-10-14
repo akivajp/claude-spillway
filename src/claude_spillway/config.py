@@ -6,8 +6,11 @@ YAML設定ファイルとCLI上書きを扱う設定モデル群。
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import re
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +28,12 @@ CONFIG_ENV_VAR = "CLAUDE_SPILLWAY_CONFIG"
 #: File name looked up inside the user config directory.
 #: ユーザー設定ディレクトリ内で探されるファイル名。
 CONFIG_FILE_NAME = "config.yaml"
+
+#: File ``ollama-login`` saves the ollama.com session cookie (and its expiry)
+#: to, inside the user config directory.
+#: ``ollama-login`` がollama.comのセッションCookie(と有効期限)を保存するファイル名。
+#: ユーザー設定ディレクトリ内に置かれる。
+OLLAMA_SESSION_FILE_NAME = "ollama-session.json"
 
 
 def user_config_dir() -> Path:
@@ -123,11 +132,101 @@ class OllamaConfig(BaseModel):
     #: 2026-10以降、APIキーで読める使用量エンドポイントは使用率を返さなくなったため、
     #: アカウントの設定ページが唯一の取得元となっている。
     session_cookie: str = ""
+    #: Where ``claude-spillway ollama-login`` saves the cookie with its expiry.
+    #: Empty means ``<user config dir>/ollama-session.json``. Read on every
+    #: fetch, so a refreshed cookie takes effect without a restart. An explicit
+    #: ``session_cookie`` wins over this file.
+    #: ``claude-spillway ollama-login`` がCookieを有効期限付きで保存するファイル。
+    #: 空なら ``<ユーザー設定ディレクトリ>/ollama-session.json``。取得のたびに
+    #: 読み直すため、Cookieを更新しても再起動は不要。``session_cookie`` を明示
+    #: 指定した場合はそちらが優先される。
+    session_file: str = ""
     #: How often to read the settings page, in seconds. Kept well above the
     #: probe interval so the polling looks like a person, not a scraper.
     #: 設定ページを読む間隔(秒)。スクレイピングと見なされないよう、
     #: プローブ間隔よりも十分長くしている。
     usage_page_interval_seconds: float = 120.0
+
+    def session_file_path(self) -> Path:
+        """Return where the saved ollama.com session lives.
+
+        保存済みのollama.comセッションの置き場所を返す。
+        """
+        if self.session_file.strip():
+            return Path(self.session_file.strip()).expanduser()
+        return user_config_dir() / OLLAMA_SESSION_FILE_NAME
+
+
+@dataclass(frozen=True)
+class OllamaSession:
+    """An ollama.com session cookie, with its expiry when known.
+
+    ollama.comのセッションCookie。分かる場合は有効期限も持つ。
+    """
+
+    cookie: str
+    #: Expiry in epoch seconds. Only a saved session knows it: the cookie value
+    #: itself is opaque, and ollama.com never re-sends it with an expiry.
+    #: 有効期限(エポック秒)。分かるのは保存済みセッションのみ。Cookieの値は
+    #: 不透明で、ollama.comもアクセス時に期限付きで再送してこないため。
+    expires: float | None = None
+    #: ``"config"`` (ollama.session_cookie) or ``"file"`` (the saved session).
+    #: 取得元。``"config"`` (ollama.session_cookie) か ``"file"`` (保存済みファイル)。
+    source: str = "config"
+
+
+def load_ollama_session(config: OllamaConfig) -> OllamaSession | None:
+    """Resolve which ollama.com session to use, or ``None`` if there is none.
+
+    An explicit ``session_cookie`` wins; otherwise the saved session file is
+    read. An unreadable file counts as no session rather than an error, so the
+    proxy keeps routing as if it had none.
+
+    使用するollama.comのセッションを決める。無ければ ``None``。
+    ``session_cookie`` の明示指定が優先され、無ければ保存済みファイルを読む。
+    読めないファイルはエラーにせず「セッション無し」として扱い、プロキシは
+    セッションが無い場合と同じように動き続ける。
+    """
+    if config.session_cookie.strip():
+        return OllamaSession(cookie=config.session_cookie.strip(), source="config")
+    path = config.session_file_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    cookie = data.get("cookie")
+    if not isinstance(cookie, str) or not cookie.strip():
+        return None
+    expires = data.get("expires")
+    if isinstance(expires, bool) or not isinstance(expires, (int, float)):
+        expires = None
+    return OllamaSession(cookie=cookie.strip(), expires=float(expires) if expires else None, source="file")
+
+
+def save_ollama_session(path: Path, cookie: str, expires: float | None) -> None:
+    """Write the session file atomically, readable by the owner only.
+
+    The cookie grants more than the API key does (it can manage the account),
+    so the file is created with mode 0600 before any secret is written to it.
+
+    セッションファイルを、所有者のみ読める状態でアトミックに書き込む。
+    CookieはAPIキーより強い権限を持つ(アカウント操作も可能)ため、秘密を書き込む
+    前の段階で 0600 としてファイルを作成する。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(
+        {"cookie": cookie, "expires": expires, "saved_at": time.time()}, indent=2
+    )
+    tmp = path.with_name(path.name + ".tmp")
+    # 既存の一時ファイルが緩い権限で残っていても引き継がないよう、先に消す。
+    # Remove a leftover temp file first so its (possibly looser) mode is not reused.
+    tmp.unlink(missing_ok=True)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(payload + "\n")
+    os.replace(tmp, path)
 
 
 class QuotaConfig(BaseModel):

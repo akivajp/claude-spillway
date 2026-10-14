@@ -112,6 +112,92 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Polling interval in seconds",
         "ja": "ポーリング間隔(秒)",
     },
+    # --- ollama-login -------------------------------------------------------
+    # argparse のヘルプ文言は % を %% とエスケープする必要がある(ここでは未使用)。
+    # argparse help strings would need %% for a literal percent (none used here).
+    "cli.login.help": {
+        "en": "Sign in to ollama.com in a browser and save the session cookie (to read Ollama's quota)",
+        "ja": "ブラウザでollama.comにログインし、セッションCookieを保存する(Ollamaのquota取得用)",
+    },
+    "cli.login.config": {
+        "en": "Config file path (defaults to the OS-standard location)",
+        "ja": "設定ファイルのパス(省略時はOS標準の場所)",
+    },
+    "cli.login.headed": {
+        "en": "Always open the browser window, even if the saved profile is still signed in",
+        "ja": "保存済みプロファイルがログイン済みでも、常にブラウザを画面に出す",
+    },
+    "cli.login.timeout": {
+        "en": "Seconds to wait for the sign-in to finish (default: 600)",
+        "ja": "ログイン完了を待つ秒数(デフォルト: 600)",
+    },
+    "cli.login.channel": {
+        "en": "Browser to drive: chrome / msedge (installed) or chromium (`playwright install chromium`)",
+        "ja": "使うブラウザ: chrome / msedge (インストール済みのもの) または chromium (`playwright install chromium` が必要)",
+    },
+    "cli.login.profile_dir": {
+        "en": "Browser profile directory (default: <user data dir>/ollama-profile)",
+        "ja": "ブラウザプロファイルのディレクトリ(デフォルト: <ユーザーデータディレクトリ>/ollama-profile)",
+    },
+    "cli.login.session_file": {
+        "en": "Where to save the session (default: ollama.session_file in the config)",
+        "ja": "セッションの保存先(デフォルト: 設定の ollama.session_file)",
+    },
+    "cli.login.no_playwright": {
+        "en": (
+            "Playwright is not installed. Install the login extra, e.g. "
+            "`uv tool install 'claude-spillway[login]'` (or `pip install 'claude-spillway[login]'`)."
+        ),
+        "ja": (
+            "Playwrightがインストールされていません。login extra を入れてください。例: "
+            "`uv tool install 'claude-spillway[login]'` (または `pip install 'claude-spillway[login]'`)"
+        ),
+    },
+    "cli.login.checking": {
+        "en": "Checking whether the saved profile is still signed in ({profile}) ...",
+        "ja": "保存済みプロファイルがログイン済みか確認しています ({profile}) ...",
+    },
+    "cli.login.opening": {
+        "en": "Opening a browser window: sign in to ollama.com there (waiting up to {timeout}s).",
+        "ja": "ブラウザを開きます。そこでollama.comにログインしてください(最大{timeout}秒待ちます)。",
+    },
+    "cli.login.browser_error": {
+        "en": "Could not start the browser: {error}",
+        "ja": "ブラウザを起動できませんでした: {error}",
+    },
+    "cli.login.browser_hint": {
+        "en": (
+            "Signing in needs a screen. Over SSH, point DISPLAY (and XAUTHORITY) at the desktop "
+            "session, or run this on a machine with a screen. Without Chrome, try --channel chromium "
+            "after `playwright install chromium`."
+        ),
+        "ja": (
+            "ログインには画面が必要です。SSH経由の場合は DISPLAY (と XAUTHORITY) をデスクトップの"
+            "セッションに向けるか、画面のあるマシンで実行してください。Chromeが無い場合は "
+            "`playwright install chromium` の後に --channel chromium を試してください。"
+        ),
+    },
+    "cli.login.failed": {
+        "en": "No signed-in session was obtained (timed out, or the window was closed).",
+        "ja": "ログイン済みのセッションを取得できませんでした(タイムアウト、またはウィンドウが閉じられました)。",
+    },
+    "cli.login.saved": {"en": "Saved the session to {path}", "ja": "セッションを保存しました: {path}"},
+    "cli.login.expires": {
+        "en": "Session expires: {date} (in {days} days)",
+        "ja": "セッションの有効期限: {date} (あと{days}日)",
+    },
+    "cli.login.quota": {
+        "en": "Ollama quota used: session {session} / weekly {weekly}",
+        "ja": "Ollamaのquota使用率: セッション窓 {session} / 週次窓 {weekly}",
+    },
+    "cli.login.overridden": {
+        "en": "Note: ollama.session_cookie is set in the config and takes precedence over this file.",
+        "ja": "注意: 設定で ollama.session_cookie が指定されているため、このファイルより優先されます。",
+    },
+    "cli.login.picked_up": {
+        "en": "A running proxy picks it up on its next reading; no restart needed.",
+        "ja": "稼働中のプロキシは次回の取得時に自動で読み込みます(再起動は不要です)。",
+    },
     "cli.models.help": {
         "en": "List the Ollama Cloud models, and optionally add them to Claude Code's /model picker",
         "ja": "Ollama Cloudのモデル一覧を表示し、必要ならClaude Codeの /model 一覧へ登録する",
@@ -359,17 +445,20 @@ _MESSAGES: dict[str, dict[str, str]] = {
     # Why Ollama's quota cannot be read; keyed by recovery.OLLAMA_PROBLEM_CODES.
     # Ollamaのquotaを読めない理由。recovery.OLLAMA_PROBLEM_CODES と対応する。
     "monitor.ollama.problem.session_expired": {
-        "en": "ollama.com session expired: update OLLAMA_SESSION_COOKIE and restart",
-        "ja": "ollama.comのセッションが失効しました。OLLAMA_SESSION_COOKIEを更新して再起動してください",
+        "en": "ollama.com session expired: run `claude-spillway ollama-login`",
+        "ja": "ollama.comのセッションが失効しました。claude-spillway ollama-login を実行してください",
     },
     "monitor.ollama.problem.page_not_understood": {
         "en": "the ollama.com usage page could not be read (its layout may have changed)",
         "ja": "ollama.comの使用量ページを解釈できません(ページ構成が変わった可能性があります)",
     },
     "monitor.ollama.problem.api_no_utilization": {
-        "en": "Ollama's API no longer reports quota: set ollama.session_cookie",
-        "ja": "OllamaのAPIはquotaを返さなくなりました。ollama.session_cookieを設定してください",
+        "en": "Ollama's API no longer reports quota: run `claude-spillway ollama-login`",
+        "ja": "OllamaのAPIはquotaを返さなくなりました。claude-spillway ollama-login を実行してください",
     },
+    "monitor.row.session_expires": {"en": "ollama.com session", "ja": "ollama.comセッション"},
+    "monitor.session.days_left": {"en": "{date} (in {days} days)", "ja": "{date} (あと{days}日)"},
+    "monitor.session.expired": {"en": "{date} (expired)", "ja": "{date} (失効)"},
     "monitor.ollama.no_reset": {
         "en": "Ollama reports no reset times",
         "ja": "Ollamaはリセット時刻を返しません",

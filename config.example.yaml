@@ -25,14 +25,20 @@ ollama:
   # Ollama Cloud API key. Issue one at https://ollama.com/settings/keys .
   # Ollama CloudのAPIキー。 https://ollama.com/settings/keys で発行してください。
   api_key: ${OLLAMA_API_KEY}
-  # Value of the __Secure-session cookie from a browser signed in to ollama.com
-  # (optional). The quota (%) and reset times are only shown on the account's
-  # settings page, so without this the Ollama quota stays unknown. Expires
-  # roughly 90 days after sign-in.
-  # ollama.comにログインしたブラウザの __Secure-session Cookieの値(任意)。
-  # quota(%)とリセット時刻はアカウントの設定ページにしか表示されないため、
-  # 未設定だとOllama側のquotaは不明のままになる。ログインから約90日で失効する。
-  session_cookie: ${OLLAMA_SESSION_COOKIE}
+  # Ollama's quota (%) and reset times are only shown on the account's settings
+  # page, which needs a signed-in session. Run `claude-spillway ollama-login`
+  # once: it saves the session cookie with its expiry to session_file below,
+  # and the proxy re-reads that file, so re-running it needs no restart.
+  # Ollamaのquota(%)とリセット時刻はアカウントの設定ページにしか表示されず、
+  # ログインセッションが必要。`claude-spillway ollama-login` を一度実行すると
+  # セッションCookieを有効期限付きで下記 session_file に保存する。プロキシは
+  # このファイルを読み直すため、再実行しても再起動は不要。
+  # Default: <user config dir>/ollama-session.json
+  # session_file: ~/.config/claude-spillway/ollama-session.json
+  # Or give the __Secure-session cookie value directly (wins over session_file;
+  # the expiry is then unknown).
+  # Cookieの値を直接指定することもできる(session_fileより優先。期限は不明になる)。
+  # session_cookie: ${OLLAMA_SESSION_COOKIE}
   # How often to read that settings page, in seconds.
   # 設定ページを読みに行く間隔(秒)
   usage_page_interval_seconds: 120
